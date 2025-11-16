@@ -1,0 +1,1291 @@
+-- ============================================
+-- HR EMPLOYEE MANAGEMENT SYSTEM
+-- Comprehensive HR Database with Security
+-- ============================================
+
+-- Drop existing tables if they exist (in reverse order of dependencies)
+DROP TABLE IF EXISTS salary_history CASCADE;
+DROP TABLE IF EXISTS bonus_payments CASCADE;
+DROP TABLE IF EXISTS performance_reviews CASCADE;
+DROP TABLE IF EXISTS employee_benefits CASCADE;
+DROP TABLE IF EXISTS benefits CASCADE;
+DROP TABLE IF EXISTS attendance CASCADE;
+DROP TABLE IF EXISTS leave_requests CASCADE;
+DROP TABLE IF EXISTS contracts CASCADE;
+DROP TABLE IF EXISTS employees CASCADE;
+DROP TABLE IF EXISTS job_positions CASCADE;
+DROP TABLE IF EXISTS departments CASCADE;
+DROP TABLE IF EXISTS salary_grades CASCADE;
+DROP TABLE IF EXISTS contract_types CASCADE;
+
+-- ============================================
+-- LOOKUP/REFERENCE TABLES
+-- ============================================
+
+-- Salary Grades Table
+CREATE TABLE salary_grades (
+    grade_id INT PRIMARY KEY,
+    grade_name VARCHAR(20) UNIQUE NOT NULL,
+    min_salary DECIMAL(12,2) NOT NULL,
+    max_salary DECIMAL(12,2) NOT NULL,
+    bonus_percentage DECIMAL(5,2) DEFAULT 0.00,
+    description TEXT,
+    CHECK (min_salary > 0),
+    CHECK (max_salary > min_salary),
+    CHECK (bonus_percentage >= 0 AND bonus_percentage <= 100)
+);
+
+-- Contract Types Table
+CREATE TABLE contract_types (
+    contract_type_id INT PRIMARY KEY,
+    type_name VARCHAR(50) UNIQUE NOT NULL,
+    description TEXT,
+    max_duration_months INT,
+    renewable BOOLEAN DEFAULT TRUE,
+    CHECK (max_duration_months > 0)
+);
+
+-- Departments Table
+CREATE TABLE departments (
+    department_id INT PRIMARY KEY,
+    department_code VARCHAR(10) UNIQUE NOT NULL,
+    department_name VARCHAR(100) NOT NULL,
+    description TEXT,
+    location VARCHAR(100),
+    budget DECIMAL(15,2) DEFAULT 0.00,
+    manager_id INT,
+    parent_department_id INT,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CHECK (budget >= 0)
+);
+
+-- Job Positions Table
+CREATE TABLE job_positions (
+    position_id INT PRIMARY KEY,
+    position_code VARCHAR(20) UNIQUE NOT NULL,
+    position_title VARCHAR(100) NOT NULL,
+    department_id INT NOT NULL,
+    grade_id INT NOT NULL,
+    job_description TEXT,
+    required_qualifications TEXT,
+    required_experience_years INT DEFAULT 0,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_position_department 
+        FOREIGN KEY (department_id) 
+        REFERENCES departments(department_id) 
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_position_grade 
+        FOREIGN KEY (grade_id) 
+        REFERENCES salary_grades(grade_id) 
+        ON DELETE RESTRICT
+);
+
+-- ============================================
+-- MAIN EMPLOYEE TABLE
+-- ============================================
+
+CREATE TABLE employees (
+    employee_id INT PRIMARY KEY,
+    employee_number VARCHAR(20) UNIQUE NOT NULL,
+    
+    -- Personal Information
+    first_name VARCHAR(50) NOT NULL,
+    last_name VARCHAR(50) NOT NULL,
+    date_of_birth DATE NOT NULL,
+    gender VARCHAR(10),
+    nationality VARCHAR(50),
+    
+    -- Contact Information
+    email VARCHAR(100) UNIQUE NOT NULL,
+    phone VARCHAR(20),
+    mobile VARCHAR(20),
+    address_line1 VARCHAR(200),
+    address_line2 VARCHAR(200),
+    city VARCHAR(100),
+    state_province VARCHAR(100),
+    postal_code VARCHAR(20),
+    country VARCHAR(50) DEFAULT 'USA',
+    
+    -- Emergency Contact
+    emergency_contact_name VARCHAR(100),
+    emergency_contact_phone VARCHAR(20),
+    emergency_contact_relationship VARCHAR(50),
+    
+    -- Employment Information
+    position_id INT NOT NULL,
+    department_id INT NOT NULL,
+    hire_date DATE NOT NULL,
+    employment_status VARCHAR(20) DEFAULT 'Active',
+    termination_date DATE,
+    termination_reason TEXT,
+    
+    -- Manager/Reporting
+    reports_to INT,
+    
+    -- Sensitive Financial Data
+    current_salary DECIMAL(12,2) NOT NULL,
+    bank_account_number VARCHAR(50),
+    tax_id VARCHAR(20),
+    
+    -- System Fields
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(100) DEFAULT 'SYSTEM',
+    
+    CHECK (email LIKE '%@%'),
+    CHECK (gender IN ('Male', 'Female', 'Other', 'Prefer not to say')),
+    CHECK (employment_status IN ('Active', 'On Leave', 'Suspended', 'Terminated', 'Retired')),
+    CHECK (current_salary > 0),
+    CHECK (hire_date <= CURRENT_DATE),
+    
+    CONSTRAINT fk_employee_position 
+        FOREIGN KEY (position_id) 
+        REFERENCES job_positions(position_id) 
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_employee_department 
+        FOREIGN KEY (department_id) 
+        REFERENCES departments(department_id) 
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_employee_manager 
+        FOREIGN KEY (reports_to) 
+        REFERENCES employees(employee_id) 
+        ON DELETE SET NULL
+);
+
+-- Add foreign key for department manager
+ALTER TABLE departments 
+ADD CONSTRAINT fk_department_manager 
+    FOREIGN KEY (manager_id) 
+    REFERENCES employees(employee_id) 
+    ON DELETE SET NULL;
+
+-- ============================================
+-- CONTRACT MANAGEMENT
+-- ============================================
+
+CREATE TABLE contracts (
+    contract_id INT PRIMARY KEY,
+    contract_number VARCHAR(20) UNIQUE NOT NULL,
+    employee_id INT NOT NULL,
+    contract_type_id INT NOT NULL,
+    
+    -- Contract Dates
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    signed_date DATE,
+    
+    -- Contract Terms
+    salary DECIMAL(12,2) NOT NULL,
+    working_hours_per_week DECIMAL(5,2) DEFAULT 40.00,
+    probation_period_months INT DEFAULT 3,
+    notice_period_days INT DEFAULT 30,
+    
+    -- Status
+    status VARCHAR(20) DEFAULT 'Active',
+    
+    -- Documents
+    contract_file_path VARCHAR(500),
+    notes TEXT,
+    
+    -- System Fields
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(100) DEFAULT 'SYSTEM',
+    
+    CHECK (end_date > start_date),
+    CHECK (salary > 0),
+    CHECK (working_hours_per_week > 0 AND working_hours_per_week <= 168),
+    CHECK (status IN ('Draft', 'Active', 'Expired', 'Terminated', 'Renewed')),
+    
+    CONSTRAINT fk_contract_employee 
+        FOREIGN KEY (employee_id) 
+        REFERENCES employees(employee_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT fk_contract_type 
+        FOREIGN KEY (contract_type_id) 
+        REFERENCES contract_types(contract_type_id) 
+        ON DELETE RESTRICT
+);
+
+-- ============================================
+-- SALARY & COMPENSATION
+-- ============================================
+
+-- Salary History Table
+CREATE TABLE salary_history (
+    salary_history_id INT PRIMARY KEY,
+    employee_id INT NOT NULL,
+    
+    -- Salary Change
+    previous_salary DECIMAL(12,2),
+    new_salary DECIMAL(12,2) NOT NULL,
+    change_amount DECIMAL(12,2),
+    change_percentage DECIMAL(5,2),
+    
+    -- Change Details
+    effective_date DATE NOT NULL,
+    change_reason VARCHAR(100),
+    approved_by INT,
+    
+    -- Notes
+    notes TEXT,
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    CHECK (new_salary > 0),
+    
+    CONSTRAINT fk_salary_history_employee 
+        FOREIGN KEY (employee_id) 
+        REFERENCES employees(employee_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT fk_salary_approved_by 
+        FOREIGN KEY (approved_by) 
+        REFERENCES employees(employee_id) 
+        ON DELETE SET NULL
+);
+
+-- Bonus Payments Table
+CREATE TABLE bonus_payments (
+    bonus_id INT PRIMARY KEY,
+    employee_id INT NOT NULL,
+    
+    -- Bonus Details
+    bonus_type VARCHAR(50) NOT NULL,
+    bonus_amount DECIMAL(12,2) NOT NULL,
+    calculation_basis TEXT,
+    
+    -- Period
+    bonus_year INT NOT NULL,
+    bonus_quarter INT,
+    bonus_month INT,
+    
+    -- Status
+    status VARCHAR(20) DEFAULT 'Pending',
+    approved_by INT,
+    approved_date DATE,
+    payment_date DATE,
+    
+    -- Notes
+    notes TEXT,
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    CHECK (bonus_amount >= 0),
+    CHECK (bonus_type IN ('Performance', 'Annual', 'Quarterly', 'Project', 'Retention', 'Signing', 'Referral')),
+    CHECK (status IN ('Pending', 'Approved', 'Paid', 'Rejected', 'Cancelled')),
+    CHECK (bonus_quarter BETWEEN 1 AND 4 OR bonus_quarter IS NULL),
+    CHECK (bonus_month BETWEEN 1 AND 12 OR bonus_month IS NULL),
+    
+    CONSTRAINT fk_bonus_employee 
+        FOREIGN KEY (employee_id) 
+        REFERENCES employees(employee_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT fk_bonus_approved_by 
+        FOREIGN KEY (approved_by) 
+        REFERENCES employees(employee_id) 
+        ON DELETE SET NULL
+);
+
+-- ============================================
+-- BENEFITS MANAGEMENT
+-- ============================================
+
+CREATE TABLE benefits (
+    benefit_id INT PRIMARY KEY,
+    benefit_name VARCHAR(100) UNIQUE NOT NULL,
+    benefit_type VARCHAR(50) NOT NULL,
+    description TEXT,
+    provider VARCHAR(100),
+    cost_per_month DECIMAL(10,2) DEFAULT 0.00,
+    employee_contribution_pct DECIMAL(5,2) DEFAULT 0.00,
+    is_active BOOLEAN DEFAULT TRUE,
+    
+    CHECK (benefit_type IN ('Health Insurance', 'Dental', 'Vision', 'Life Insurance', 
+                           '401k', 'Stock Options', 'Gym Membership', 'Transportation', 'Other')),
+    CHECK (cost_per_month >= 0),
+    CHECK (employee_contribution_pct >= 0 AND employee_contribution_pct <= 100)
+);
+
+CREATE TABLE employee_benefits (
+    employee_benefit_id INT PRIMARY KEY,
+    employee_id INT NOT NULL,
+    benefit_id INT NOT NULL,
+    
+    -- Enrollment
+    enrollment_date DATE NOT NULL,
+    effective_date DATE NOT NULL,
+    termination_date DATE,
+    
+    -- Coverage
+    coverage_level VARCHAR(50),
+    employee_contribution DECIMAL(10,2) DEFAULT 0.00,
+    
+    -- Status
+    status VARCHAR(20) DEFAULT 'Active',
+    
+    CHECK (status IN ('Active', 'Suspended', 'Terminated')),
+    
+    CONSTRAINT fk_emp_benefit_employee 
+        FOREIGN KEY (employee_id) 
+        REFERENCES employees(employee_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT fk_emp_benefit_benefit 
+        FOREIGN KEY (benefit_id) 
+        REFERENCES benefits(benefit_id) 
+        ON DELETE RESTRICT,
+    CONSTRAINT unique_employee_benefit 
+        UNIQUE (employee_id, benefit_id)
+);
+
+-- ============================================
+-- PERFORMANCE & REVIEWS
+-- ============================================
+
+CREATE TABLE performance_reviews (
+    review_id INT PRIMARY KEY,
+    employee_id INT NOT NULL,
+    reviewer_id INT NOT NULL,
+    
+    -- Review Period
+    review_period_start DATE NOT NULL,
+    review_period_end DATE NOT NULL,
+    review_date DATE NOT NULL,
+    
+    -- Ratings (1-5 scale)
+    overall_rating DECIMAL(3,2),
+    quality_of_work DECIMAL(3,2),
+    productivity DECIMAL(3,2),
+    communication DECIMAL(3,2),
+    teamwork DECIMAL(3,2),
+    innovation DECIMAL(3,2),
+    
+    -- Feedback
+    strengths TEXT,
+    areas_for_improvement TEXT,
+    goals_for_next_period TEXT,
+    reviewer_comments TEXT,
+    employee_comments TEXT,
+    
+    -- Outcome
+    recommended_salary_increase_pct DECIMAL(5,2),
+    recommended_bonus_amount DECIMAL(10,2),
+    promotion_recommended BOOLEAN DEFAULT FALSE,
+    
+    -- Status
+    status VARCHAR(20) DEFAULT 'Draft',
+    
+    CHECK (overall_rating BETWEEN 1 AND 5 OR overall_rating IS NULL),
+    CHECK (status IN ('Draft', 'Completed', 'Acknowledged')),
+    
+    CONSTRAINT fk_review_employee 
+        FOREIGN KEY (employee_id) 
+        REFERENCES employees(employee_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT fk_review_reviewer 
+        FOREIGN KEY (reviewer_id) 
+        REFERENCES employees(employee_id) 
+        ON DELETE RESTRICT
+);
+
+-- ============================================
+-- ATTENDANCE & LEAVE
+-- ============================================
+
+CREATE TABLE leave_requests (
+    leave_id INT PRIMARY KEY,
+    employee_id INT NOT NULL,
+    
+    -- Leave Details
+    leave_type VARCHAR(30) NOT NULL,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    total_days INT NOT NULL,
+    
+    -- Request
+    request_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    reason TEXT,
+    
+    -- Approval
+    status VARCHAR(20) DEFAULT 'Pending',
+    approved_by INT,
+    approved_date TIMESTAMP,
+    rejection_reason TEXT,
+    
+    CHECK (leave_type IN ('Vacation', 'Sick Leave', 'Personal', 'Maternity', 
+                         'Paternity', 'Bereavement', 'Unpaid', 'Other')),
+    CHECK (end_date >= start_date),
+    CHECK (total_days > 0),
+    CHECK (status IN ('Pending', 'Approved', 'Rejected', 'Cancelled')),
+    
+    CONSTRAINT fk_leave_employee 
+        FOREIGN KEY (employee_id) 
+        REFERENCES employees(employee_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT fk_leave_approved_by 
+        FOREIGN KEY (approved_by) 
+        REFERENCES employees(employee_id) 
+        ON DELETE SET NULL
+);
+
+CREATE TABLE attendance (
+    attendance_id INT PRIMARY KEY,
+    employee_id INT NOT NULL,
+    
+    -- Attendance Details
+    attendance_date DATE NOT NULL,
+    check_in_time TIME,
+    check_out_time TIME,
+    total_hours DECIMAL(5,2),
+    
+    -- Status
+    status VARCHAR(20) DEFAULT 'Present',
+    
+    -- Notes
+    notes TEXT,
+    
+    CHECK (status IN ('Present', 'Absent', 'Late', 'Half Day', 'On Leave', 'Holiday', 'Weekend')),
+    
+    CONSTRAINT fk_attendance_employee 
+        FOREIGN KEY (employee_id) 
+        REFERENCES employees(employee_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT unique_employee_date 
+        UNIQUE (employee_id, attendance_date)
+);
+
+-- ============================================
+-- INDEXES FOR PERFORMANCE
+-- ============================================
+
+-- Employee Indexes
+CREATE INDEX idx_employees_department ON employees(department_id);
+CREATE INDEX idx_employees_position ON employees(position_id);
+CREATE INDEX idx_employees_status ON employees(employment_status);
+CREATE INDEX idx_employees_manager ON employees(reports_to);
+CREATE INDEX idx_employees_hire_date ON employees(hire_date);
+CREATE INDEX idx_employees_email ON employees(email);
+
+-- Contract Indexes
+CREATE INDEX idx_contracts_employee ON contracts(employee_id);
+CREATE INDEX idx_contracts_status ON contracts(status);
+CREATE INDEX idx_contracts_dates ON contracts(start_date, end_date);
+CREATE INDEX idx_contracts_expiring ON contracts(end_date) 
+    WHERE status = 'Active';
+
+-- Salary History Indexes
+CREATE INDEX idx_salary_history_employee ON salary_history(employee_id);
+CREATE INDEX idx_salary_history_date ON salary_history(effective_date);
+
+-- Bonus Indexes
+CREATE INDEX idx_bonus_employee ON bonus_payments(employee_id);
+CREATE INDEX idx_bonus_status ON bonus_payments(status);
+CREATE INDEX idx_bonus_year ON bonus_payments(bonus_year);
+
+-- Performance Review Indexes
+CREATE INDEX idx_review_employee ON performance_reviews(employee_id);
+CREATE INDEX idx_review_reviewer ON performance_reviews(reviewer_id);
+CREATE INDEX idx_review_date ON performance_reviews(review_date);
+
+-- Leave Request Indexes
+CREATE INDEX idx_leave_employee ON leave_requests(employee_id);
+CREATE INDEX idx_leave_status ON leave_requests(status);
+CREATE INDEX idx_leave_dates ON leave_requests(start_date, end_date);
+
+-- Attendance Indexes
+CREATE INDEX idx_attendance_employee ON attendance(employee_id);
+CREATE INDEX idx_attendance_date ON attendance(attendance_date);
+
+-- ============================================
+-- STORED PROCEDURES & FUNCTIONS
+-- ============================================
+
+-- Procedure 1: Calculate Employee Bonus
+DELIMITER //
+CREATE PROCEDURE calculate_employee_bonus(
+    IN p_employee_id INT,
+    IN p_bonus_year INT,
+    IN p_bonus_type VARCHAR(50),
+    OUT p_bonus_amount DECIMAL(12,2),
+    OUT p_result VARCHAR(200)
+)
+BEGIN
+    DECLARE v_base_salary DECIMAL(12,2);
+    DECLARE v_grade_bonus_pct DECIMAL(5,2);
+    DECLARE v_performance_rating DECIMAL(3,2);
+    DECLARE v_months_employed INT;
+    DECLARE v_employee_exists INT;
+    
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        SET p_bonus_amount = 0;
+        SET p_result = 'Error: Bonus calculation failed';
+    END;
+    
+    -- Check if employee exists
+    SELECT COUNT(*) INTO v_employee_exists
+    FROM employees
+    WHERE employee_id = p_employee_id 
+      AND employment_status = 'Active';
+    
+    IF v_employee_exists = 0 THEN
+        SET p_bonus_amount = 0;
+        SET p_result = 'Error: Employee not found or inactive';
+    ELSE
+        -- Get employee salary and grade bonus percentage
+        SELECT 
+            e.current_salary,
+            sg.bonus_percentage
+        INTO v_base_salary, v_grade_bonus_pct
+        FROM employees e
+        JOIN job_positions jp ON e.position_id = jp.position_id
+        JOIN salary_grades sg ON jp.grade_id = sg.grade_id
+        WHERE e.employee_id = p_employee_id;
+        
+        -- Get latest performance rating
+        SELECT COALESCE(overall_rating, 3.0) INTO v_performance_rating
+        FROM performance_reviews
+        WHERE employee_id = p_employee_id
+          AND review_date >= DATE_SUB(CURRENT_DATE, INTERVAL 1 YEAR)
+        ORDER BY review_date DESC
+        LIMIT 1;
+        
+        -- Calculate months employed in the year
+        SELECT 
+            LEAST(
+                12,
+                PERIOD_DIFF(
+                    DATE_FORMAT(CONCAT(p_bonus_year, '-12-31'), '%Y%m'),
+                    DATE_FORMAT(GREATEST(hire_date, CONCAT(p_bonus_year, '-01-01')), '%Y%m')
+                ) + 1
+            )
+        INTO v_months_employed
+        FROM employees
+        WHERE employee_id = p_employee_id;
+        
+        -- Calculate bonus based on type
+        CASE p_bonus_type
+            WHEN 'Annual' THEN
+                -- Annual bonus: base salary * grade bonus % * performance multiplier * proration
+                SET p_bonus_amount = v_base_salary * (v_grade_bonus_pct / 100) * 
+                                    (v_performance_rating / 3.0) * (v_months_employed / 12.0);
+            
+            WHEN 'Performance' THEN
+                -- Performance bonus: higher weight on performance rating
+                SET p_bonus_amount = v_base_salary * 0.15 * (v_performance_rating / 3.0);
+            
+            WHEN 'Quarterly' THEN
+                -- Quarterly bonus: 25% of annual bonus
+                SET p_bonus_amount = (v_base_salary * (v_grade_bonus_pct / 100) * 0.25);
+            
+            ELSE
+                SET p_bonus_amount = 0;
+        END CASE;
+        
+        -- Round to 2 decimal places
+        SET p_bonus_amount = ROUND(p_bonus_amount, 2);
+        SET p_result = CONCAT('Success: Bonus calculated: $', FORMAT(p_bonus_amount, 2));
+    END IF;
+END //
+DELIMITER ;
+
+-- Procedure 2: Create Bonus Payment
+DELIMITER //
+CREATE PROCEDURE create_bonus_payment(
+    IN p_employee_id INT,
+    IN p_bonus_type VARCHAR(50),
+    IN p_bonus_year INT,
+    IN p_approved_by INT,
+    OUT p_bonus_id INT,
+    OUT p_result VARCHAR(200)
+)
+BEGIN
+    DECLARE v_bonus_amount DECIMAL(12,2);
+    DECLARE v_calc_result VARCHAR(200);
+    
+    -- Calculate bonus
+    CALL calculate_employee_bonus(
+        p_employee_id, 
+        p_bonus_year, 
+        p_bonus_type,
+        v_bonus_amount,
+        v_calc_result
+    );
+    
+    IF v_bonus_amount > 0 THEN
+        -- Get next bonus ID
+        SELECT COALESCE(MAX(bonus_id), 0) + 1 INTO p_bonus_id
+        FROM bonus_payments;
+        
+        -- Insert bonus payment
+        INSERT INTO bonus_payments (
+            bonus_id, employee_id, bonus_type, bonus_amount,
+            bonus_year, status, approved_by, approved_date,
+            calculation_basis
+        ) VALUES (
+            p_bonus_id, p_employee_id, p_bonus_type, v_bonus_amount,
+            p_bonus_year, 'Approved', p_approved_by, CURRENT_DATE,
+            v_calc_result
+        );
+        
+        SET p_result = CONCAT('Success: Bonus created with amount $', FORMAT(v_bonus_amount, 2));
+    ELSE
+        SET p_bonus_id = NULL;
+        SET p_result = v_calc_result;
+    END IF;
+END //
+DELIMITER ;
+
+-- Procedure 3: Update Employee Salary
+DELIMITER //
+CREATE PROCEDURE update_employee_salary(
+    IN p_employee_id INT,
+    IN p_new_salary DECIMAL(12,2),
+    IN p_reason VARCHAR(100),
+    IN p_approved_by INT,
+    OUT p_result VARCHAR(200)
+)
+BEGIN
+    DECLARE v_current_salary DECIMAL(12,2);
+    DECLARE v_change_amount DECIMAL(12,2);
+    DECLARE v_change_percentage DECIMAL(5,2);
+    DECLARE v_history_id INT;
+    
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SET p_result = 'Error: Salary update failed';
+    END;
+    
+    START TRANSACTION;
+    
+    -- Get current salary
+    SELECT current_salary INTO v_current_salary
+    FROM employees
+    WHERE employee_id = p_employee_id;
+    
+    -- Calculate changes
+    SET v_change_amount = p_new_salary - v_current_salary;
+    SET v_change_percentage = (v_change_amount / v_current_salary) * 100;
+    
+    -- Update employee salary
+    UPDATE employees
+    SET current_salary = p_new_salary,
+        last_updated = CURRENT_TIMESTAMP
+    WHERE employee_id = p_employee_id;
+    
+    -- Get next history ID
+    SELECT COALESCE(MAX(salary_history_id), 0) + 1 INTO v_history_id
+    FROM salary_history;
+    
+    -- Insert salary history
+    INSERT INTO salary_history (
+        salary_history_id, employee_id, previous_salary, new_salary,
+        change_amount, change_percentage, effective_date,
+        change_reason, approved_by
+    ) VALUES (
+        v_history_id, p_employee_id, v_current_salary, p_new_salary,
+        v_change_amount, v_change_percentage, CURRENT_DATE,
+        p_reason, p_approved_by
+    );
+    
+    COMMIT;
+    SET p_result = CONCAT('Success: Salary updated from $', FORMAT(v_current_salary, 2), 
+                         ' to $', FORMAT(p_new_salary, 2), ' (', 
+                         FORMAT(v_change_percentage, 2), '% change)');
+END //
+DELIMITER ;
+
+-- Procedure 4: Get Department Employee Summary
+DELIMITER //
+CREATE PROCEDURE get_department_summary(IN p_department_id INT)
+BEGIN
+    SELECT 
+        d.department_name,
+        d.location,
+        COUNT(e.employee_id) AS total_employees,
+        COUNT(CASE WHEN e.employment_status = 'Active' THEN 1 END) AS active_employees,
+        AVG(e.current_salary) AS avg_salary,
+        SUM(e.current_salary) AS total_salary_cost,
+        MIN(e.hire_date) AS earliest_hire_date,
+        MAX(e.hire_date) AS latest_hire_date,
+        CONCAT(m.first_name, ' ', m.last_name) AS department_manager
+    FROM departments d
+    LEFT JOIN employees e ON d.department_id = e.department_id
+    LEFT JOIN employees m ON d.manager_id = m.employee_id
+    WHERE d.department_id = p_department_id
+    GROUP BY d.department_id, d.department_name, d.location, m.first_name, m.last_name;
+    
+    -- Employee list for the department
+    SELECT 
+        e.employee_number,
+        CONCAT(e.first_name, ' ', e.last_name) AS employee_name,
+        jp.position_title,
+        e.current_salary,
+        e.hire_date,
+        e.employment_status,
+        CONCAT(mgr.first_name, ' ', mgr.last_name) AS manager_name
+    FROM employees e
+    JOIN job_positions jp ON e.position_id = jp.position_id
+    LEFT JOIN employees mgr ON e.reports_to = mgr.employee_id
+    WHERE e.department_id = p_department_id
+    ORDER BY jp.position_title, e.last_name;
+END //
+DELIMITER ;
+
+-- ============================================
+-- TRIGGERS
+-- ============================================
+
+-- Trigger 1: Update employee status when contract expires
+DELIMITER //
+CREATE TRIGGER check_contract_expiration
+BEFORE UPDATE ON contracts
+FOR EACH ROW
+BEGIN
+    IF NEW.end_date <= CURRENT_DATE AND OLD.status = 'Active' THEN
+        SET NEW.status = 'Expired';
+        
+        -- Update employee status
+        UPDATE employees
+        SET employment_status = 'On Leave',
+            last_updated = CURRENT_TIMESTAMP
+        WHERE employee_id = NEW.employee_id;
+    END IF;
+END //
+DELIMITER ;
+
+-- Trigger 2: Automated contract expiration check (for batch updates)
+DELIMITER //
+CREATE EVENT check_expired_contracts
+ON SCHEDULE EVERY 1 DAY
+STARTS CURRENT_TIMESTAMP
+DO
+BEGIN
+    -- Update expired contracts
+    UPDATE contracts
+    SET status = 'Expired'
+    WHERE end_date < CURRENT_DATE 
+      AND status = 'Active';
+    
+    -- Update employee status for expired contracts
+    UPDATE employees e
+    SET employment_status = 'On Leave',
+        last_updated = CURRENT_TIMESTAMP
+    WHERE employee_id IN (
+        SELECT employee_id 
+        FROM contracts 
+        WHERE status = 'Expired' 
+          AND end_date >= DATE_SUB(CURRENT_DATE, INTERVAL 1 DAY)
+    );
+END //
+DELIMITER ;
+
+-- Trigger 3: Log salary changes automatically
+DELIMITER //
+CREATE TRIGGER after_salary_update
+AFTER UPDATE ON employees
+FOR EACH ROW
+BEGIN
+    DECLARE v_history_id INT;
+    
+    IF OLD.current_salary != NEW.current_salary THEN
+        SELECT COALESCE(MAX(salary_history_id), 0) + 1 INTO v_history_id
+        FROM salary_history;
+        
+        INSERT INTO salary_history (
+            salary_history_id, employee_id, previous_salary, new_salary,
+            change_amount, change_percentage, effective_date,
+            change_reason
+        ) VALUES (
+            v_history_id, NEW.employee_id, OLD.current_salary, NEW.current_salary,
+            (NEW.current_salary - OLD.current_salary),
+            ((NEW.current_salary - OLD.current_salary) / OLD.current_salary) * 100,
+            CURRENT_DATE,
+            'Automatic salary update'
+        );
+    END IF;
+END //
+DELIMITER ;
+
+-- Trigger 4: Validate salary against grade
+DELIMITER //
+CREATE TRIGGER validate_salary_grade
+BEFORE INSERT ON employees
+FOR EACH ROW
+BEGIN
+    DECLARE v_min_salary DECIMAL(12,2);
+    DECLARE v_max_salary DECIMAL(12,2);
+    
+    SELECT sg.min_salary, sg.max_salary
+    INTO v_min_salary, v_max_salary
+    FROM job_positions jp
+    JOIN salary_grades sg ON jp.grade_id = sg.grade_id
+    WHERE jp.position_id = NEW.position_id;
+    
+    IF NEW.current_salary < v_min_salary OR NEW.current_salary > v_max_salary THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Salary is outside the valid range for this grade';
+    END IF;
+END //
+DELIMITER ;
+
+-- Trigger 5: Update last_updated timestamp
+DELIMITER //
+CREATE TRIGGER update_employee_timestamp
+BEFORE UPDATE ON employees
+FOR EACH ROW
+BEGIN
+    SET NEW.last_updated = CURRENT_TIMESTAMP;
+END //
+DELIMITER ;
+
+-- ============================================
+-- SECURITY: ROLES AND PRIVILEGES
+-- ============================================
+
+-- Create roles
+DROP ROLE IF EXISTS 'hr_admin';
+DROP ROLE IF EXISTS 'hr_manager';
+DROP ROLE IF EXISTS 'hr_staff';
+DROP ROLE IF EXISTS 'employee_self_service';
+DROP ROLE IF EXISTS 'payroll_admin';
+
+CREATE ROLE 'hr_admin';
+CREATE ROLE 'hr_manager';
+CREATE ROLE 'hr_staff';
+CREATE ROLE 'employee_self_service';
+CREATE ROLE 'payroll_admin';
+
+-- HR Admin: Full access to all tables
+GRANT ALL PRIVILEGES ON employees TO 'hr_admin';
+GRANT ALL PRIVILEGES ON departments TO 'hr_admin';
+GRANT ALL PRIVILEGES ON job_positions TO 'hr_admin';
+GRANT ALL PRIVILEGES ON contracts TO 'hr_admin';
+GRANT ALL PRIVILEGES ON salary_history TO 'hr_admin';
+GRANT ALL PRIVILEGES ON bonus_payments TO 'hr_admin';
+GRANT ALL PRIVILEGES ON performance_reviews TO 'hr_admin';
+GRANT ALL PRIVILEGES ON benefits TO 'hr_admin';
+GRANT ALL PRIVILEGES ON employee_benefits TO 'hr_admin';
+GRANT ALL PRIVILEGES ON leave_requests TO 'hr_admin';
+GRANT ALL PRIVILEGES ON attendance TO 'hr_admin';
+
+-- HR Manager: Read all, write most (excluding sensitive financial data modifications)
+GRANT SELECT ON employees TO 'hr_manager';
+GRANT SELECT, INSERT, UPDATE ON departments TO 'hr_manager';
+GRANT SELECT, INSERT, UPDATE ON job_positions TO 'hr_manager';
+GRANT SELECT, INSERT, UPDATE ON contracts TO 'hr_manager';
+GRANT SELECT ON salary_history TO 'hr_manager';
+GRANT SELECT, INSERT, UPDATE ON bonus_payments TO 'hr_manager';
+GRANT SELECT, INSERT, UPDATE ON performance_reviews TO 'hr_manager';
+GRANT SELECT ON benefits TO 'hr_manager';
+GRANT SELECT, INSERT, UPDATE ON employee_benefits TO 'hr_manager';
+GRANT SELECT, INSERT, UPDATE ON leave_requests TO 'hr_manager';
+GRANT SELECT, INSERT, UPDATE ON attendance TO 'hr_manager';
+
+-- HR Staff: Read most, limited write access
+GRANT SELECT ON employees TO 'hr_staff';
+GRANT SELECT ON departments TO 'hr_staff';
+GRANT SELECT ON job_positions TO 'hr_staff';
+GRANT SELECT ON contracts TO 'hr_staff';
+GRANT SELECT, INSERT, UPDATE ON leave_requests TO 'hr_staff';
+GRANT SELECT, INSERT, UPDATE ON attendance TO 'hr_staff';
+GRANT SELECT ON performance_reviews TO 'hr_staff';
+
+-- Employee Self Service: Very limited access to own data only
+GRANT SELECT ON employees TO 'employee_self_service';
+GRANT SELECT ON departments TO 'employee_self_service';
+GRANT SELECT ON job_positions TO 'employee_self_service';
+GRANT SELECT, INSERT ON leave_requests TO 'employee_self_service';
+GRANT SELECT ON attendance TO 'employee_self_service';
+GRANT SELECT ON employee_benefits TO 'employee_self_service';
+GRANT SELECT ON benefits TO 'employee_self_service';
+
+-- Payroll Admin: Full access to salary and bonus data
+GRANT SELECT ON employees TO 'payroll_admin';
+GRANT ALL PRIVILEGES ON salary_history TO 'payroll_admin';
+GRANT ALL PRIVILEGES ON bonus_payments TO 'payroll_admin';
+GRANT SELECT ON contracts TO 'payroll_admin';
+GRANT SELECT ON performance_reviews TO 'payroll_admin';
+
+-- Create sensitive data views (hide sensitive columns)
+CREATE OR REPLACE VIEW vw_employee_public AS
+SELECT 
+    employee_id,
+    employee_number,
+    first_name,
+    last_name,
+    email,
+    phone,
+    position_id,
+    department_id,
+    hire_date,
+    employment_status,
+    reports_to
+FROM employees;
+
+-- Grant access to public view for all roles
+GRANT SELECT ON vw_employee_public TO 'hr_staff';
+GRANT SELECT ON vw_employee_public TO 'employee_self_service';
+
+-- ============================================
+-- SAMPLE DATA
+-- ============================================
+
+-- Insert Salary Grades
+INSERT INTO salary_grades VALUES
+(1, 'Entry Level', 35000.00, 50000.00, 5.00, 'Junior positions, 0-2 years experience'),
+(2, 'Mid Level', 50000.00, 75000.00, 8.00, 'Mid-level positions, 2-5 years experience'),
+(3, 'Senior Level', 75000.00, 110000.00, 12.00, 'Senior positions, 5-10 years experience'),
+(4, 'Lead Level', 110000.00, 150000.00, 15.00, 'Team leads and managers'),
+(5, 'Executive', 150000.00, 300000.00, 20.00, 'Executive and C-level positions');
+
+-- Insert Contract Types
+INSERT INTO contract_types VALUES
+(1, 'Permanent Full-Time', 'Indefinite full-time employment', NULL, TRUE),
+(2, 'Fixed-Term', 'Fixed duration contract', 36, TRUE),
+(3, 'Part-Time', 'Part-time employment', NULL, TRUE),
+(4, 'Contract', 'Independent contractor', 24, TRUE),
+(5, 'Internship', 'Internship program', 12, FALSE);
+
+-- Insert Departments
+INSERT INTO departments (department_id, department_code, department_name, description, 
+                        location, budget, is_active) VALUES
+(1, 'IT', 'Information Technology', 'Technology and systems management', 'Building A, Floor 3', 500000.00, TRUE),
+(2, 'HR', 'Human Resources', 'Employee relations and recruitment', 'Building A, Floor 2', 300000.00, TRUE),
+(3, 'FIN', 'Finance', 'Financial planning and accounting', 'Building B, Floor 1', 400000.00, TRUE),
+(4, 'MKT', 'Marketing', 'Marketing and communications', 'Building B, Floor 2', 350000.00, TRUE),
+(5, 'SALES', 'Sales', 'Sales and business development', 'Building C, Floor 1', 600000.00, TRUE);
+
+-- Insert Job Positions
+INSERT INTO job_positions VALUES
+(1, 'DEV-JR', 'Junior Developer', 1, 1, 'Entry-level software development', 'Bachelor in CS, basic programming skills', 0, TRUE, CURRENT_TIMESTAMP),
+(2, 'DEV-SR', 'Senior Developer', 1, 3, 'Senior software development', 'Bachelor in CS, 5+ years experience', 5, TRUE, CURRENT_TIMESTAMP),
+(3, 'IT-MGR', 'IT Manager', 1, 4, 'IT department management', 'Bachelor in IT, 7+ years experience', 7, TRUE, CURRENT_TIMESTAMP),
+(4, 'HR-SPEC', 'HR Specialist', 2, 2, 'HR operations and recruitment', 'Bachelor in HR, 3+ years experience', 3, TRUE, CURRENT_TIMESTAMP),
+(5, 'HR-DIR', 'HR Director', 2, 4, 'HR department leadership', 'Master in HR, 10+ years experience', 10, TRUE, CURRENT_TIMESTAMP),
+(6, 'FIN-AN', 'Financial Analyst', 3, 2, 'Financial analysis and reporting', 'Bachelor in Finance, CPA preferred', 2, TRUE, CURRENT_TIMESTAMP),
+(7, 'MKT-COORD', 'Marketing Coordinator', 4, 2, 'Marketing campaign coordination', 'Bachelor in Marketing, 2+ years experience', 2, TRUE, CURRENT_TIMESTAMP),
+(8, 'SALES-REP', 'Sales Representative', 5, 2, 'B2B sales and client relations', 'Bachelor degree, sales experience', 1, TRUE, CURRENT_TIMESTAMP);
+
+-- Insert Employees (Department Managers and Staff)
+INSERT INTO employees (employee_id, employee_number, first_name, last_name, date_of_birth, 
+                      gender, email, phone, mobile, position_id, department_id, 
+                      hire_date, employment_status, current_salary, reports_to) VALUES
+-- IT Department
+(1001, 'EMP-1001', 'Robert', 'Anderson', '1980-05-15', 'Male', 'r.anderson@company.com', 
+ '+1-555-1001', '+1-555-9001', 3, 1, '2015-03-10', 'Active', 125000.00, NULL),
+(1002, 'EMP-1002', 'Jennifer', 'Martinez', '1985-08-22', 'Female', 'j.martinez@company.com',
+ '+1-555-1002', '+1-555-9002', 2, 1, '2018-06-15', 'Active', 95000.00, 1001),
+(1003, 'EMP-1003', 'David', 'Chen', '1992-11-30', 'Male', 'd.chen@company.com',
+ '+1-555-1003', '+1-555-9003', 1, 1, '2023-01-20', 'Active', 48000.00, 1002),
+
+-- HR Department  
+(2001, 'EMP-2001', 'Sarah', 'Williams', '1978-03-12', 'Female', 's.williams@company.com',
+ '+1-555-2001', '+1-555-9201', 5, 2, '2014-01-15', 'Active', 135000.00, NULL),
+(2002, 'EMP-2002', 'Michael', 'Brown', '1987-07-18', 'Male', 'm.brown@company.com',
+ '+1-555-2002', '+1-555-9202', 4, 2, '2019-04-10', 'Active', 68000.00, 2001),
+
+-- Finance Department
+(3001, 'EMP-3001', 'Lisa', 'Taylor', '1982-09-25', 'Female', 'l.taylor@company.com',
+ '+1-555-3001', '+1-555-9301', 3, 3, '2016-08-20', 'Active', 120000.00, NULL),
+(3002, 'EMP-3002', 'James', 'Wilson', '1990-12-05', 'Male', 'j.wilson@company.com',
+ '+1-555-3002', '+1-555-9302', 6, 3, '2020-02-15', 'Active', 72000.00, 3001),
+
+-- Marketing Department
+(4001, 'EMP-4001', 'Emily', 'Davis', '1988-04-14', 'Female', 'e.davis@company.com',
+ '+1-555-4001', '+1-555-9401', 3, 4, '2017-11-05', 'Active', 115000.00, NULL),
+(4002, 'EMP-4002', 'Daniel', 'Moore', '1993-06-28', 'Male', 'd.moore@company.com',
+ '+1-555-4002', '+1-555-9402', 7, 4, '2021-09-12', 'Active', 65000.00, 4001),
+
+-- Sales Department
+(5001, 'EMP-5001', 'Amanda', 'Garcia', '1984-02-20', 'Female', 'a.garcia@company.com',
+ '+1-555-5001', '+1-555-9501', 4, 5, '2016-05-18', 'Active', 128000.00, NULL),
+(5002, 'EMP-5002', 'Christopher', 'Martinez', '1991-10-08', 'Male', 'c.martinez@company.com',
+ '+1-555-5002', '+1-555-9502', 8, 5, '2022-03-25', 'Active', 58000.00, 5001);
+
+-- Update department managers
+UPDATE departments SET manager_id = 1001 WHERE department_id = 1;
+UPDATE departments SET manager_id = 2001 WHERE department_id = 2;
+UPDATE departments SET manager_id = 3001 WHERE department_id = 3;
+UPDATE departments SET manager_id = 4001 WHERE department_id = 4;
+UPDATE departments SET manager_id = 5001 WHERE department_id = 5;
+
+-- Insert Contracts
+INSERT INTO contracts (contract_id, contract_number, employee_id, contract_type_id,
+                      start_date, end_date, signed_date, salary, status) VALUES
+(1, 'CONT-2015-001', 1001, 1, '2015-03-10', '2099-12-31', '2015-03-01', 125000.00, 'Active'),
+(2, 'CONT-2018-002', 1002, 1, '2018-06-15', '2099-12-31', '2018-06-01', 95000.00, 'Active'),
+(3, 'CONT-2023-003', 1003, 1, '2023-01-20', '2099-12-31', '2023-01-10', 48000.00, 'Active'),
+(4, 'CONT-2014-004', 2001, 1, '2014-01-15', '2099-12-31', '2014-01-01', 135000.00, 'Active'),
+(5, 'CONT-2019-005', 2002, 1, '2019-04-10', '2099-12-31', '2019-03-28', 68000.00, 'Active'),
+(6, 'CONT-2024-006', 1003, 2, '2024-01-01', '2024-12-31', '2023-12-15', 48000.00, 'Active'),
+(7, 'CONT-2024-007', 5002, 1, '2024-01-15', '2025-01-14', '2024-01-05', 58000.00, 'Active');
+
+-- Insert Benefits
+INSERT INTO benefits VALUES
+(1, 'Health Insurance Premium', 'Health Insurance', 'Comprehensive health coverage', 'BlueCross BlueShield', 800.00, 20.00, TRUE),
+(2, 'Dental Insurance', 'Dental', 'Full dental coverage', 'Delta Dental', 100.00, 25.00, TRUE),
+(3, 'Vision Insurance', 'Vision', 'Vision care and glasses', 'VSP', 50.00, 30.00, TRUE),
+(4, '401k Match', '401k', 'Company matches up to 6%', 'Fidelity', 0.00, 0.00, TRUE),
+(5, 'Life Insurance', 'Life Insurance', 'Term life insurance', 'MetLife', 50.00, 0.00, TRUE),
+(6, 'Gym Membership', 'Gym Membership', 'Local gym access', '24 Hour Fitness', 80.00, 50.00, TRUE);
+
+-- Insert Employee Benefits
+INSERT INTO employee_benefits (employee_benefit_id, employee_id, benefit_id, 
+                               enrollment_date, effective_date, coverage_level, 
+                               employee_contribution, status) VALUES
+(1, 1001, 1, '2015-03-10', '2015-04-01', 'Family', 160.00, 'Active'),
+(2, 1001, 2, '2015-03-10', '2015-04-01', 'Family', 25.00, 'Active'),
+(3, 1001, 4, '2015-03-10', '2015-04-01', '6% Match', 0.00, 'Active'),
+(4, 1002, 1, '2018-06-15', '2018-07-01', 'Individual', 160.00, 'Active'),
+(5, 1003, 1, '2023-01-20', '2023-02-01', 'Individual', 160.00, 'Active'),
+(6, 2001, 1, '2014-01-15', '2014-02-01', 'Family', 160.00, 'Active'),
+(7, 2001, 4, '2014-01-15', '2014-02-01', '6% Match', 0.00, 'Active');
+
+-- Insert Performance Reviews
+INSERT INTO performance_reviews (review_id, employee_id, reviewer_id, 
+                                review_period_start, review_period_end, review_date,
+                                overall_rating, quality_of_work, productivity, 
+                                communication, teamwork, innovation, 
+                                strengths, areas_for_improvement, status) VALUES
+(1, 1002, 1001, '2023-01-01', '2023-12-31', '2024-01-15',
+ 4.2, 4.5, 4.0, 4.0, 4.5, 4.0,
+ 'Excellent technical skills, great team player',
+ 'Could improve project documentation',
+ 'Completed'),
+(2, 1003, 1002, '2023-06-01', '2023-12-31', '2024-01-20',
+ 3.8, 4.0, 3.5, 4.0, 4.0, 3.5,
+ 'Quick learner, eager to take on new challenges',
+ 'Needs more experience with complex projects',
+ 'Completed'),
+(3, 2002, 2001, '2023-01-01', '2023-12-31', '2024-01-18',
+ 4.5, 4.5, 4.5, 5.0, 4.5, 4.0,
+ 'Outstanding communication skills, excellent recruiter',
+ 'Continue developing strategic HR skills',
+ 'Completed');
+
+-- Insert Salary History
+INSERT INTO salary_history (salary_history_id, employee_id, previous_salary, new_salary,
+                           change_amount, change_percentage, effective_date, 
+                           change_reason, approved_by) VALUES
+(1, 1002, 85000.00, 95000.00, 10000.00, 11.76, '2023-01-01', 'Annual performance increase', 1001),
+(2, 1003, 45000.00, 48000.00, 3000.00, 6.67, '2023-07-01', 'Probation completion raise', 1002),
+(3, 2002, 62000.00, 68000.00, 6000.00, 9.68, '2023-01-01', 'Annual performance increase', 2001);
+
+-- Insert Bonus Payments
+INSERT INTO bonus_payments (bonus_id, employee_id, bonus_type, bonus_amount,
+                           bonus_year, status, approved_by, approved_date, payment_date) VALUES
+(1, 1001, 'Annual', 18750.00, 2023, 'Paid', 2001, '2024-01-15', '2024-02-01'),
+(2, 1002, 'Annual', 11400.00, 2023, 'Paid', 1001, '2024-01-15', '2024-02-01'),
+(3, 2001, 'Annual', 27000.00, 2023, 'Paid', NULL, '2024-01-15', '2024-02-01'),
+(4, 2002, 'Performance', 5440.00, 2023, 'Approved', 2001, '2024-01-20', NULL);
+
+-- Insert Leave Requests
+INSERT INTO leave_requests (leave_id, employee_id, leave_type, start_date, end_date,
+                           total_days, reason, status, approved_by, approved_date) VALUES
+(1, 1002, 'Vacation', '2024-12-20', '2024-12-31', 10, 'Year-end vacation', 'Approved', 1001, '2024-11-15'),
+(2, 1003, 'Sick Leave', '2024-11-10', '2024-11-12', 3, 'Medical appointment', 'Approved', 1002, '2024-11-09'),
+(3, 2002, 'Personal', '2024-11-25', '2024-11-27', 3, 'Family matter', 'Pending', NULL, NULL),
+(4, 5002, 'Vacation', '2024-12-15', '2024-12-22', 6, 'Holiday vacation', 'Approved', 5001, '2024-11-10');
+
+-- Insert Attendance Records
+INSERT INTO attendance (attendance_id, employee_id, attendance_date, check_in_time,
+                       check_out_time, total_hours, status) VALUES
+(1, 1001, '2024-11-14', '08:30:00', '17:30:00', 8.5, 'Present'),
+(2, 1002, '2024-11-14', '09:00:00', '18:00:00', 8.5, 'Present'),
+(3, 1003, '2024-11-14', '08:45:00', '17:15:00', 8.0, 'Present'),
+(4, 2001, '2024-11-14', '08:00:00', '17:00:00', 8.5, 'Present'),
+(5, 2002, '2024-11-14', '09:15:00', '18:15:00', 8.5, 'Late'),
+(6, 1001, '2024-11-15', '08:30:00', '17:30:00', 8.5, 'Present'),
+(7, 1002, '2024-11-15', '09:00:00', '18:00:00', 8.5, 'Present');
+
+-- ============================================
+-- REPORTING QUERIES
+-- ============================================
+
+-- Query 1: Employee Directory with Full Details
+SELECT 
+    e.employee_number,
+    CONCAT(e.first_name, ' ', e.last_name) AS full_name,
+    e.email,
+    e.mobile,
+    d.department_name,
+    jp.position_title,
+    e.hire_date,
+    TIMESTAMPDIFF(YEAR, e.hire_date, CURRENT_DATE) AS years_of_service,
+    e.employment_status,
+    CONCAT(mgr.first_name, ' ', mgr.last_name) AS manager_name
+FROM employees e
+JOIN departments d ON e.department_id = d.department_id
+JOIN job_positions jp ON e.position_id = jp.position_id
+LEFT JOIN employees mgr ON e.reports_to = mgr.employee_id
+WHERE e.employment_status = 'Active'
+ORDER BY d.department_name, jp.position_title, e.last_name;
+
+-- Query 2: Salary Report by Department
+SELECT 
+    d.department_name,
+    COUNT(e.employee_id) AS employee_count,
+    MIN(e.current_salary) AS min_salary,
+    MAX(e.current_salary) AS max_salary,
+    AVG(e.current_salary) AS avg_salary,
+    SUM(e.current_salary) AS total_salary_cost,
+    STDDEV(e.current_salary) AS salary_std_dev
+FROM departments d
+LEFT JOIN employees e ON d.department_id = e.department_id 
+    AND e.employment_status = 'Active'
+GROUP BY d.department_id, d.department_name
+ORDER BY total_salary_cost DESC;
+
+-- Query 3: Contract Expiration Report
+SELECT 
+    c.contract_number,
+    CONCAT(e.first_name, ' ', e.last_name) AS employee_name,
+    e.email,
+    d.department_name,
+    jp.position_title,
+    c.start_date,
+    c.end_date,
+    DATEDIFF(c.end_date, CURRENT_DATE) AS days_until_expiration,
+    c.status,
+    ct.type_name AS contract_type
+FROM contracts c
+JOIN employees e ON c.employee_id = e.employee_id
+JOIN departments d ON e.department_id = d.department_id
+JOIN job_positions jp ON e.position_id = jp.position_id
+JOIN contract_types ct ON c.contract_type_id = ct.contract_type_id
+WHERE c.status = 'Active'
+  AND c.end_date BETWEEN CURRENT_DATE AND DATE_ADD(CURRENT_DATE, INTERVAL 90 DAY)
+ORDER BY c.end_date;
+
+-- Query 4: Performance Review Summary
+SELECT 
+    CONCAT(e.first_name, ' ', e.last_name) AS employee_name,
+    d.department_name,
+    jp.position_title,
+    pr.review_date,
+    pr.overall_rating,
+    pr.quality_of_work,
+    pr.productivity,
+    pr.communication,
+    pr.recommended_salary_increase_pct,
+    pr.promotion_recommended,
+    CONCAT(rev.first_name, ' ', rev.last_name) AS reviewer_name
+FROM performance_reviews pr
+JOIN employees e ON pr.employee_id = e.employee_id
+JOIN departments d ON e.department_id = d.department_id
+JOIN job_positions jp ON e.position_id = jp.position_id
+JOIN employees rev ON pr.reviewer_id = rev.employee_id
+WHERE pr.review_date >= DATE_SUB(CURRENT_DATE, INTERVAL 1 YEAR)
+ORDER BY pr.review_date DESC, pr.overall_rating DESC;
+
+-- Query 5: Benefits Enrollment Report
+SELECT 
+    b.benefit_name,
+    b.benefit_type,
+    COUNT(eb.employee_benefit_id) AS enrolled_employees,
+    SUM(eb.employee_contribution) AS total_employee_contributions,
+    COUNT(eb.employee_benefit_id) * b.cost_per_month AS total_monthly_cost
+FROM benefits b
+LEFT JOIN employee_benefits eb ON b.benefit_id = eb.benefit_id 
+    AND eb.status = 'Active'
+WHERE b.is_active = TRUE
+GROUP BY b.benefit_id, b.benefit_name, b.benefit_type, b.cost_per_month
+ORDER BY enrolled_employees DESC;
+
+-- Query 6: Leave Balance and Usage Report
+SELECT 
+    e.employee_number,
+    CONCAT(e.first_name, ' ', e.last_name) AS employee_name,
+    d.department_name,
+    COUNT(CASE WHEN lr.leave_type = 'Vacation' AND lr.status = 'Approved' 
+          THEN 1 END) AS vacation_days_taken,
+    COUNT(CASE WHEN lr.leave_type = 'Sick Leave' AND lr.status = 'Approved' 
+          THEN 1 END) AS sick_days_taken,
+    COUNT(CASE WHEN lr.status = 'Approved' THEN 1 END) AS total_days_taken,
+    COUNT(CASE WHEN lr.status = 'Pending' THEN 1 END) AS pending_requests
+FROM employees e
+JOIN departments d ON e.department_id = d.department_id
+LEFT JOIN leave_requests lr ON e.employee_id = lr.employee_id
+    AND YEAR(lr.start_date) = YEAR(CURRENT_DATE)
+WHERE e.employment_status = 'Active'
+GROUP BY e.employee_id, e.employee_number, e.first_name, e.last_name, d.department_name
+ORDER BY d.department_name, e.last_name;
+
+-- Query 7: Attendance Summary Report
+SELECT 
+    e.employee_number,
+    CONCAT(e.first_name, ' ', e.last_name) AS employee_name,
+    d.department_name,
+    COUNT(CASE WHEN a.status = 'Present' THEN 1 END) AS days_present,
+    COUNT(CASE WHEN a.status = 'Absent' THEN 1 END) AS days_absent,
+    COUNT(CASE WHEN a.status = 'Late' THEN 1 END) AS days_late,
+    AVG(a.total_hours) AS avg_hours_per_day,
+    (COUNT(CASE WHEN a.status = 'Present' THEN 1 END) / 
+     COUNT(*) * 100) AS attendance_percentage
+FROM employees e
+JOIN departments d ON e.department_id = d.department_id
+LEFT JOIN attendance a ON e.employee_id = a.employee_id
+    AND a.attendance_date >= DATE_SUB(CURRENT_DATE, INTERVAL 30 DAY)
+WHERE e.employment_status = 'Active'
+GROUP BY e.employee_id, e.employee_number, e.first_name, e.last_name, d.department_name
+HAVING COUNT(*) > 0
+ORDER BY attendance_percentage DESC;
+
+-- Query 8: Bonus Summary Report
+SELECT 
+    e.employee_number,
+    CONCAT(e.first_name, ' ', e.last_name) AS employee_name,
+    d.department_name,
+    bp.bonus_year,
+    bp.bonus_type,
+    bp.bonus_amount,
+    bp.status,
+    bp.payment_date,
+    (bp.bonus_amount / e.current_salary * 100) AS bonus_percentage_of_salary
+FROM bonus_payments bp
+JOIN employees e ON bp.employee_id = e.employee_id
+JOIN departments d ON e.department_id = d.department_id
+WHERE bp.bonus_year >= YEAR(CURRENT_DATE) - 1
+ORDER BY bp.bonus_year DESC, bp.bonus_amount DESC;
+
+-- Query 9: Organizational Hierarchy
+SELECT 
+    e1.employee_number,
+    CONCAT(e1.first_name, ' ', e1.last_name) AS employee_name,
+    jp1.position_title,
+    d1.department_name,
+    CONCAT(e2.first_name, ' ', e2.last_name) AS manager_name,
+    jp2.position_title AS manager_position,
+    e1.current_salary
+FROM employees e1
+JOIN job_positions jp1 ON e1.position_id = jp1.position_id
+JOIN departments d1 ON e1.department_id = d1.department_id
+LEFT JOIN employees e2 ON e1.reports_to = e2.employee_id
+LEFT JOIN job_positions jp2 ON e2.position_id = jp2.position_id
+WHERE e1.employment_status = 'Active'
+ORDER BY d1.department_name, 
+         CASE WHEN e1.reports_to IS NULL THEN 0 ELSE 1 END,
+         e1.reports_to,
+         e1.last_name;
+
+-- ============================================
+-- USAGE EXAMPLES
+-- ============================================
+
+-- Example 1: Calculate bonus for an employee
+CALL calculate_employee_bonus(1002, 2024, 'Annual', @bonus_amt, @result);
+SELECT @bonus_amt AS calculated_bonus, @result AS calculation_result;
+
+-- Example 2: Create bonus payment
+CALL create_bonus_payment(1002, 'Annual', 2024, 2001, @bonus_id, @result);
+SELECT @bonus_id AS new_bonus_id, @result AS result_message;
+
+-- Example 3: Update employee salary
+CALL update_employee_salary(1003, 52000.00, 'Annual performance increase', 1002, @result);
+SELECT @result AS salary_update_result;
+
+-- Example 4: Get department summary
+CALL get_department_summary(1);
+
+-- Example 5: Generate monthly sales report (using function)
+SELECT generate_monthly_sales_report(2024, 11) AS report;
