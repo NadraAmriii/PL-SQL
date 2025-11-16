@@ -1,0 +1,645 @@
+-- ============================================
+-- INVENTORY MANAGEMENT SYSTEM
+-- ============================================
+
+-- Drop existing tables if they exist (in reverse order of dependencies)
+DROP TABLE IF EXISTS stock_movements CASCADE;
+DROP TABLE IF EXISTS purchase_orders CASCADE;
+DROP TABLE IF EXISTS product_suppliers CASCADE;
+DROP TABLE IF EXISTS products CASCADE;
+DROP TABLE IF EXISTS suppliers CASCADE;
+DROP TABLE IF EXISTS categories CASCADE;
+DROP TABLE IF EXISTS warehouses CASCADE;
+
+-- ============================================
+-- TABLE CREATION
+-- ============================================
+
+-- Categories Table
+CREATE TABLE categories (
+    category_id INT PRIMARY KEY,
+    category_name VARCHAR(50) UNIQUE NOT NULL,
+    description TEXT,
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Warehouses Table
+CREATE TABLE warehouses (
+    warehouse_id INT PRIMARY KEY,
+    warehouse_name VARCHAR(100) NOT NULL,
+    location VARCHAR(200) NOT NULL,
+    capacity INT NOT NULL,
+    manager_name VARCHAR(100),
+    contact_phone VARCHAR(20),
+    CHECK (capacity > 0)
+);
+
+-- Suppliers Table
+CREATE TABLE suppliers (
+    supplier_id INT PRIMARY KEY,
+    supplier_name VARCHAR(100) UNIQUE NOT NULL,
+    contact_person VARCHAR(100),
+    email VARCHAR(100),
+    phone VARCHAR(20),
+    address TEXT,
+    city VARCHAR(50),
+    country VARCHAR(50),
+    payment_terms VARCHAR(50),
+    rating DECIMAL(2,1) DEFAULT 5.0,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CHECK (rating >= 0.0 AND rating <= 5.0),
+    CHECK (email LIKE '%@%')
+);
+
+-- Products Table
+CREATE TABLE products (
+    product_id INT PRIMARY KEY,
+    product_code VARCHAR(20) UNIQUE NOT NULL,
+    product_name VARCHAR(150) NOT NULL,
+    description TEXT,
+    category_id INT,
+    unit_price DECIMAL(10,2) NOT NULL,
+    cost_price DECIMAL(10,2) NOT NULL,
+    current_stock INT DEFAULT 0,
+    reorder_level INT DEFAULT 10,
+    reorder_quantity INT DEFAULT 50,
+    warehouse_id INT,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CHECK (unit_price >= 0),
+    CHECK (cost_price >= 0),
+    CHECK (current_stock >= 0),
+    CHECK (reorder_level >= 0),
+    CHECK (reorder_quantity > 0),
+    CONSTRAINT fk_product_category 
+        FOREIGN KEY (category_id) 
+        REFERENCES categories(category_id) 
+        ON DELETE SET NULL,
+    CONSTRAINT fk_product_warehouse 
+        FOREIGN KEY (warehouse_id) 
+        REFERENCES warehouses(warehouse_id) 
+        ON DELETE SET NULL
+);
+
+-- Product-Supplier Relationship Table (Many-to-Many)
+CREATE TABLE product_suppliers (
+    product_supplier_id INT PRIMARY KEY,
+    product_id INT NOT NULL,
+    supplier_id INT NOT NULL,
+    supplier_product_code VARCHAR(50),
+    lead_time_days INT DEFAULT 7,
+    min_order_quantity INT DEFAULT 1,
+    is_primary BOOLEAN DEFAULT FALSE,
+    CONSTRAINT fk_ps_product 
+        FOREIGN KEY (product_id) 
+        REFERENCES products(product_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT fk_ps_supplier 
+        FOREIGN KEY (supplier_id) 
+        REFERENCES suppliers(supplier_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT unique_product_supplier 
+        UNIQUE (product_id, supplier_id)
+);
+
+-- Purchase Orders Table
+CREATE TABLE purchase_orders (
+    po_id INT PRIMARY KEY,
+    po_number VARCHAR(20) UNIQUE NOT NULL,
+    supplier_id INT NOT NULL,
+    order_date DATE DEFAULT CURRENT_DATE,
+    expected_delivery_date DATE,
+    actual_delivery_date DATE,
+    status VARCHAR(20) DEFAULT 'Pending',
+    total_amount DECIMAL(12,2) DEFAULT 0.00,
+    notes TEXT,
+    CHECK (status IN ('Pending', 'Approved', 'Shipped', 'Delivered', 'Cancelled')),
+    CONSTRAINT fk_po_supplier 
+        FOREIGN KEY (supplier_id) 
+        REFERENCES suppliers(supplier_id) 
+        ON DELETE RESTRICT
+);
+
+-- Stock Movements Table (Transaction Log)
+CREATE TABLE stock_movements (
+    movement_id INT PRIMARY KEY,
+    product_id INT NOT NULL,
+    movement_type VARCHAR(20) NOT NULL,
+    quantity INT NOT NULL,
+    previous_stock INT NOT NULL,
+    new_stock INT NOT NULL,
+    reference_number VARCHAR(50),
+    po_id INT,
+    warehouse_id INT,
+    movement_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    performed_by VARCHAR(100) DEFAULT 'SYSTEM',
+    notes TEXT,
+    CHECK (movement_type IN ('STOCK_IN', 'STOCK_OUT', 'ADJUSTMENT', 'TRANSFER', 'RETURN', 'DAMAGE')),
+    CHECK (quantity > 0),
+    CONSTRAINT fk_movement_product 
+        FOREIGN KEY (product_id) 
+        REFERENCES products(product_id) 
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_movement_po 
+        FOREIGN KEY (po_id) 
+        REFERENCES purchase_orders(po_id) 
+        ON DELETE SET NULL,
+    CONSTRAINT fk_movement_warehouse 
+        FOREIGN KEY (warehouse_id) 
+        REFERENCES warehouses(warehouse_id) 
+        ON DELETE SET NULL
+);
+
+-- ============================================
+-- INDEXES FOR PERFORMANCE OPTIMIZATION
+-- ============================================
+
+CREATE INDEX idx_products_category ON products(category_id);
+CREATE INDEX idx_products_warehouse ON products(warehouse_id);
+CREATE INDEX idx_products_stock ON products(current_stock);
+CREATE INDEX idx_products_active ON products(is_active);
+CREATE INDEX idx_products_reorder ON products(current_stock, reorder_level) 
+    WHERE current_stock <= reorder_level;
+
+CREATE INDEX idx_stock_movements_product ON stock_movements(product_id);
+CREATE INDEX idx_stock_movements_date ON stock_movements(movement_date);
+CREATE INDEX idx_stock_movements_type ON stock_movements(movement_type);
+CREATE INDEX idx_stock_movements_composite ON stock_movements(product_id, movement_date);
+
+CREATE INDEX idx_suppliers_active ON suppliers(is_active);
+CREATE INDEX idx_po_status ON purchase_orders(status);
+CREATE INDEX idx_po_supplier ON purchase_orders(supplier_id);
+
+-- ============================================
+-- STORED PROCEDURES
+-- ============================================
+
+-- Procedure 1: Stock IN Operation
+DELIMITER //
+CREATE PROCEDURE stock_in(
+    IN p_product_id INT,
+    IN p_quantity INT,
+    IN p_reference_number VARCHAR(50),
+    IN p_po_id INT,
+    IN p_performed_by VARCHAR(100),
+    IN p_notes TEXT,
+    OUT p_result VARCHAR(200)
+)
+BEGIN
+    DECLARE v_current_stock INT;
+    DECLARE v_new_stock INT;
+    DECLARE v_movement_id INT;
+    DECLARE v_product_exists INT;
+    DECLARE v_warehouse_id INT;
+    
+    -- Start transaction
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SET p_result = 'Error: Transaction failed';
+    END;
+    
+    START TRANSACTION;
+    
+    -- Check if product exists
+    SELECT COUNT(*) INTO v_product_exists
+    FROM products
+    WHERE product_id = p_product_id;
+    
+    IF v_product_exists = 0 THEN
+        SET p_result = 'Error: Product not found';
+        ROLLBACK;
+    ELSE
+        -- Get current stock and warehouse
+        SELECT current_stock, warehouse_id 
+        INTO v_current_stock, v_warehouse_id
+        FROM products
+        WHERE product_id = p_product_id;
+        
+        -- Calculate new stock
+        SET v_new_stock = v_current_stock + p_quantity;
+        
+        -- Update product stock
+        UPDATE products
+        SET current_stock = v_new_stock,
+            last_updated = CURRENT_TIMESTAMP
+        WHERE product_id = p_product_id;
+        
+        -- Get next movement ID
+        SELECT COALESCE(MAX(movement_id), 0) + 1 INTO v_movement_id
+        FROM stock_movements;
+        
+        -- Insert stock movement record
+        INSERT INTO stock_movements (
+            movement_id, product_id, movement_type, quantity,
+            previous_stock, new_stock, reference_number, po_id,
+            warehouse_id, performed_by, notes
+        ) VALUES (
+            v_movement_id, p_product_id, 'STOCK_IN', p_quantity,
+            v_current_stock, v_new_stock, p_reference_number, p_po_id,
+            v_warehouse_id, p_performed_by, p_notes
+        );
+        
+        COMMIT;
+        SET p_result = CONCAT('Success: Added ', p_quantity, ' units. New stock: ', v_new_stock);
+    END IF;
+END //
+DELIMITER ;
+
+-- Procedure 2: Stock OUT Operation
+DELIMITER //
+CREATE PROCEDURE stock_out(
+    IN p_product_id INT,
+    IN p_quantity INT,
+    IN p_reference_number VARCHAR(50),
+    IN p_performed_by VARCHAR(100),
+    IN p_notes TEXT,
+    OUT p_result VARCHAR(200)
+)
+BEGIN
+    DECLARE v_current_stock INT;
+    DECLARE v_new_stock INT;
+    DECLARE v_movement_id INT;
+    DECLARE v_product_exists INT;
+    DECLARE v_warehouse_id INT;
+    
+    -- Start transaction
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SET p_result = 'Error: Transaction failed';
+    END;
+    
+    START TRANSACTION;
+    
+    -- Check if product exists
+    SELECT COUNT(*) INTO v_product_exists
+    FROM products
+    WHERE product_id = p_product_id;
+    
+    IF v_product_exists = 0 THEN
+        SET p_result = 'Error: Product not found';
+        ROLLBACK;
+    ELSE
+        -- Get current stock and warehouse
+        SELECT current_stock, warehouse_id 
+        INTO v_current_stock, v_warehouse_id
+        FROM products
+        WHERE product_id = p_product_id;
+        
+        -- Check if sufficient stock available
+        IF v_current_stock < p_quantity THEN
+            SET p_result = CONCAT('Error: Insufficient stock. Available: ', v_current_stock);
+            ROLLBACK;
+        ELSE
+            -- Calculate new stock
+            SET v_new_stock = v_current_stock - p_quantity;
+            
+            -- Update product stock
+            UPDATE products
+            SET current_stock = v_new_stock,
+                last_updated = CURRENT_TIMESTAMP
+            WHERE product_id = p_product_id;
+            
+            -- Get next movement ID
+            SELECT COALESCE(MAX(movement_id), 0) + 1 INTO v_movement_id
+            FROM stock_movements;
+            
+            -- Insert stock movement record
+            INSERT INTO stock_movements (
+                movement_id, product_id, movement_type, quantity,
+                previous_stock, new_stock, reference_number,
+                warehouse_id, performed_by, notes
+            ) VALUES (
+                v_movement_id, p_product_id, 'STOCK_OUT', p_quantity,
+                v_current_stock, v_new_stock, p_reference_number,
+                v_warehouse_id, p_performed_by, p_notes
+            );
+            
+            COMMIT;
+            SET p_result = CONCAT('Success: Removed ', p_quantity, ' units. New stock: ', v_new_stock);
+        END IF;
+    END IF;
+END //
+DELIMITER ;
+
+-- Procedure 3: Stock Adjustment
+DELIMITER //
+CREATE PROCEDURE stock_adjustment(
+    IN p_product_id INT,
+    IN p_adjustment_quantity INT,
+    IN p_reason TEXT,
+    IN p_performed_by VARCHAR(100),
+    OUT p_result VARCHAR(200)
+)
+BEGIN
+    DECLARE v_current_stock INT;
+    DECLARE v_new_stock INT;
+    DECLARE v_movement_id INT;
+    DECLARE v_warehouse_id INT;
+    
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SET p_result = 'Error: Adjustment failed';
+    END;
+    
+    START TRANSACTION;
+    
+    SELECT current_stock, warehouse_id 
+    INTO v_current_stock, v_warehouse_id
+    FROM products
+    WHERE product_id = p_product_id;
+    
+    SET v_new_stock = v_current_stock + p_adjustment_quantity;
+    
+    IF v_new_stock < 0 THEN
+        SET p_result = 'Error: Adjustment would result in negative stock';
+        ROLLBACK;
+    ELSE
+        UPDATE products
+        SET current_stock = v_new_stock,
+            last_updated = CURRENT_TIMESTAMP
+        WHERE product_id = p_product_id;
+        
+        SELECT COALESCE(MAX(movement_id), 0) + 1 INTO v_movement_id
+        FROM stock_movements;
+        
+        INSERT INTO stock_movements (
+            movement_id, product_id, movement_type, quantity,
+            previous_stock, new_stock, warehouse_id,
+            performed_by, notes
+        ) VALUES (
+            v_movement_id, p_product_id, 'ADJUSTMENT', ABS(p_adjustment_quantity),
+            v_current_stock, v_new_stock, v_warehouse_id,
+            p_performed_by, p_reason
+        );
+        
+        COMMIT;
+        SET p_result = CONCAT('Success: Stock adjusted to ', v_new_stock);
+    END IF;
+END //
+DELIMITER ;
+
+-- Procedure 4: Get Low Stock Products
+DELIMITER //
+CREATE PROCEDURE get_low_stock_products()
+BEGIN
+    SELECT 
+        p.product_id,
+        p.product_code,
+        p.product_name,
+        c.category_name,
+        p.current_stock,
+        p.reorder_level,
+        p.reorder_quantity,
+        (p.reorder_level - p.current_stock) AS shortage,
+        w.warehouse_name,
+        GROUP_CONCAT(DISTINCT s.supplier_name SEPARATOR ', ') AS suppliers
+    FROM products p
+    LEFT JOIN categories c ON p.category_id = c.category_id
+    LEFT JOIN warehouses w ON p.warehouse_id = w.warehouse_id
+    LEFT JOIN product_suppliers ps ON p.product_id = ps.product_id
+    LEFT JOIN suppliers s ON ps.supplier_id = s.supplier_id AND s.is_active = TRUE
+    WHERE p.current_stock <= p.reorder_level
+      AND p.is_active = TRUE
+    GROUP BY p.product_id, p.product_code, p.product_name, 
+             c.category_name, p.current_stock, p.reorder_level,
+             p.reorder_quantity, w.warehouse_name
+    ORDER BY (p.reorder_level - p.current_stock) DESC;
+END //
+DELIMITER ;
+
+-- ============================================
+-- TRIGGERS
+-- ============================================
+
+-- Trigger 1: Prevent Negative Stock (Safety Net)
+DELIMITER //
+CREATE TRIGGER prevent_negative_stock
+BEFORE UPDATE ON products
+FOR EACH ROW
+BEGIN
+    IF NEW.current_stock < 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Error: Stock cannot be negative';
+    END IF;
+END //
+DELIMITER ;
+
+-- Trigger 2: Auto-update last_updated timestamp
+DELIMITER //
+CREATE TRIGGER update_product_timestamp
+BEFORE UPDATE ON products
+FOR EACH ROW
+BEGIN
+    SET NEW.last_updated = CURRENT_TIMESTAMP;
+END //
+DELIMITER ;
+
+-- Trigger 3: Validate stock movement quantity
+DELIMITER //
+CREATE TRIGGER validate_movement_quantity
+BEFORE INSERT ON stock_movements
+FOR EACH ROW
+BEGIN
+    IF NEW.quantity <= 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Error: Movement quantity must be positive';
+    END IF;
+    
+    IF NEW.movement_type = 'STOCK_OUT' AND NEW.new_stock < 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Error: Insufficient stock for this operation';
+    END IF;
+END //
+DELIMITER ;
+
+-- ============================================
+-- SAMPLE DATA
+-- ============================================
+
+-- Insert Categories
+INSERT INTO categories VALUES
+(1, 'Electronics', 'Electronic devices and accessories', CURRENT_TIMESTAMP),
+(2, 'Clothing', 'Apparel and fashion items', CURRENT_TIMESTAMP),
+(3, 'Food & Beverages', 'Consumable products', CURRENT_TIMESTAMP),
+(4, 'Office Supplies', 'Stationery and office equipment', CURRENT_TIMESTAMP),
+(5, 'Furniture', 'Home and office furniture', CURRENT_TIMESTAMP);
+
+-- Insert Warehouses
+INSERT INTO warehouses VALUES
+(1, 'Main Warehouse', '123 Industrial Blvd, City Center', 10000, 'John Smith', '+1-555-0101'),
+(2, 'North Distribution Center', '456 North Ave, Uptown', 5000, 'Sarah Johnson', '+1-555-0102'),
+(3, 'South Storage Facility', '789 South St, Downtown', 7500, 'Mike Davis', '+1-555-0103');
+
+-- Insert Suppliers
+INSERT INTO suppliers VALUES
+(1, 'Tech Distributors Inc', 'Robert Chen', 'robert@techdist.com', '+1-555-1001', 
+ '100 Tech Park', 'San Francisco', 'USA', 'Net 30', 4.5, TRUE, CURRENT_TIMESTAMP),
+(2, 'Global Fashion Supply', 'Maria Garcia', 'maria@fashionsupply.com', '+1-555-1002',
+ '200 Fashion Ave', 'New York', 'USA', 'Net 45', 4.8, TRUE, CURRENT_TIMESTAMP),
+(3, 'Office Plus Wholesale', 'David Lee', 'david@officeplus.com', '+1-555-1003',
+ '300 Business Rd', 'Chicago', 'USA', 'Net 60', 4.2, TRUE, CURRENT_TIMESTAMP);
+
+-- Insert Products
+INSERT INTO products VALUES
+(1001, 'ELEC-LAP-001', 'Laptop Computer 15"', 'High-performance business laptop', 
+ 1, 899.99, 650.00, 45, 20, 50, 1, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+(1002, 'ELEC-MOU-001', 'Wireless Mouse', 'Ergonomic wireless mouse', 
+ 1, 29.99, 15.00, 150, 50, 100, 1, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+(1003, 'CLTH-TSH-001', 'Cotton T-Shirt', 'Premium cotton t-shirt', 
+ 2, 19.99, 8.00, 200, 100, 200, 2, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+(1004, 'OFF-PEN-001', 'Ballpoint Pen (Pack of 10)', 'Blue ink ballpoint pens', 
+ 4, 5.99, 2.50, 500, 200, 500, 1, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+(1005, 'FURN-DES-001', 'Office Desk', 'Adjustable height office desk', 
+ 5, 299.99, 180.00, 15, 10, 20, 3, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+(1006, 'ELEC-KEY-001', 'Mechanical Keyboard', 'RGB backlit mechanical keyboard',
+ 1, 89.99, 45.00, 8, 15, 50, 1, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+-- Insert Product-Supplier Relationships
+INSERT INTO product_suppliers VALUES
+(1, 1001, 1, 'TD-LAP-X15', 14, 10, TRUE),
+(2, 1002, 1, 'TD-MOU-W20', 7, 50, TRUE),
+(3, 1003, 2, 'GFS-TSH-COT', 21, 100, TRUE),
+(4, 1004, 3, 'OP-PEN-BLU', 5, 200, TRUE),
+(5, 1005, 3, 'OP-DSK-ADJ', 30, 5, TRUE),
+(6, 1006, 1, 'TD-KEY-RGB', 10, 20, TRUE);
+
+-- Insert Purchase Orders
+INSERT INTO purchase_orders VALUES
+(1, 'PO-2024-001', 1, '2024-11-01', '2024-11-15', NULL, 'Approved', 35000.00, 
+ 'Regular stock replenishment'),
+(2, 'PO-2024-002', 2, '2024-11-05', '2024-11-20', NULL, 'Pending', 4000.00, 
+ 'Seasonal clothing order');
+
+-- Insert Sample Stock Movements
+INSERT INTO stock_movements VALUES
+(1, 1001, 'STOCK_IN', 50, 0, 50, 'PO-2024-001', 1, 1, 
+ '2024-11-01 10:00:00', 'Admin', 'Initial stock'),
+(2, 1002, 'STOCK_IN', 200, 0, 200, 'PO-2024-001', 1, 1,
+ '2024-11-01 10:15:00', 'Admin', 'Initial stock'),
+(3, 1001, 'STOCK_OUT', 5, 50, 45, 'SALE-001', NULL, 1,
+ '2024-11-02 14:30:00', 'Sales Team', 'Customer order'),
+(4, 1002, 'STOCK_OUT', 50, 200, 150, 'SALE-002', NULL, 1,
+ '2024-11-03 09:15:00', 'Sales Team', 'Bulk order');
+
+-- ============================================
+-- PERFORMANCE-OPTIMIZED REPORTING QUERIES
+-- ============================================
+
+-- Query 1: Current Stock Levels by Category
+SELECT 
+    c.category_name,
+    COUNT(p.product_id) AS total_products,
+    SUM(p.current_stock) AS total_stock,
+    SUM(p.current_stock * p.cost_price) AS total_inventory_value,
+    AVG(p.current_stock) AS avg_stock_per_product,
+    COUNT(CASE WHEN p.current_stock <= p.reorder_level THEN 1 END) AS low_stock_count
+FROM categories c
+LEFT JOIN products p ON c.category_id = p.category_id AND p.is_active = TRUE
+GROUP BY c.category_id, c.category_name
+ORDER BY total_inventory_value DESC;
+
+-- Query 2: Products Requiring Reorder (Optimized with index)
+SELECT 
+    p.product_code,
+    p.product_name,
+    p.current_stock,
+    p.reorder_level,
+    p.reorder_quantity,
+    (p.reorder_level - p.current_stock) AS deficit,
+    p.cost_price * p.reorder_quantity AS reorder_cost,
+    s.supplier_name,
+    ps.lead_time_days
+FROM products p
+JOIN product_suppliers ps ON p.product_id = ps.product_id AND ps.is_primary = TRUE
+JOIN suppliers s ON ps.supplier_id = s.supplier_id AND s.is_active = TRUE
+WHERE p.current_stock <= p.reorder_level
+  AND p.is_active = TRUE
+ORDER BY deficit DESC
+LIMIT 20;
+
+-- Query 3: Stock Movement Summary (Last 30 Days)
+SELECT 
+    p.product_code,
+    p.product_name,
+    SUM(CASE WHEN sm.movement_type = 'STOCK_IN' THEN sm.quantity ELSE 0 END) AS total_in,
+    SUM(CASE WHEN sm.movement_type = 'STOCK_OUT' THEN sm.quantity ELSE 0 END) AS total_out,
+    SUM(CASE WHEN sm.movement_type = 'STOCK_IN' THEN sm.quantity ELSE -sm.quantity END) AS net_movement,
+    p.current_stock
+FROM products p
+LEFT JOIN stock_movements sm ON p.product_id = sm.product_id 
+    AND sm.movement_date >= DATE_SUB(CURRENT_DATE, INTERVAL 30 DAY)
+WHERE p.is_active = TRUE
+GROUP BY p.product_id, p.product_code, p.product_name, p.current_stock
+HAVING total_in > 0 OR total_out > 0
+ORDER BY total_out DESC;
+
+-- Query 4: Warehouse Stock Summary
+SELECT 
+    w.warehouse_name,
+    w.location,
+    COUNT(DISTINCT p.product_id) AS products_stored,
+    SUM(p.current_stock) AS total_units,
+    SUM(p.current_stock * p.cost_price) AS inventory_value,
+    ROUND((SUM(p.current_stock) / w.capacity) * 100, 2) AS capacity_used_pct
+FROM warehouses w
+LEFT JOIN products p ON w.warehouse_id = p.warehouse_id AND p.is_active = TRUE
+GROUP BY w.warehouse_id, w.warehouse_name, w.location, w.capacity
+ORDER BY inventory_value DESC;
+
+-- Query 5: Top Moving Products (Last 90 Days)
+SELECT 
+    p.product_code,
+    p.product_name,
+    c.category_name,
+    COUNT(sm.movement_id) AS transaction_count,
+    SUM(CASE WHEN sm.movement_type = 'STOCK_OUT' THEN sm.quantity ELSE 0 END) AS units_sold,
+    SUM(CASE WHEN sm.movement_type = 'STOCK_OUT' THEN sm.quantity * p.unit_price ELSE 0 END) AS revenue,
+    p.current_stock
+FROM products p
+JOIN categories c ON p.category_id = c.category_id
+JOIN stock_movements sm ON p.product_id = sm.product_id
+WHERE sm.movement_date >= DATE_SUB(CURRENT_DATE, INTERVAL 90 DAY)
+  AND sm.movement_type = 'STOCK_OUT'
+GROUP BY p.product_id, p.product_code, p.product_name, c.category_name, p.current_stock
+ORDER BY units_sold DESC
+LIMIT 10;
+
+-- Query 6: Supplier Performance Report
+SELECT 
+    s.supplier_name,
+    s.rating,
+    COUNT(DISTINCT ps.product_id) AS products_supplied,
+    COUNT(DISTINCT po.po_id) AS total_orders,
+    SUM(po.total_amount) AS total_purchase_value,
+    AVG(DATEDIFF(po.actual_delivery_date, po.order_date)) AS avg_delivery_days,
+    COUNT(CASE WHEN po.status = 'Delivered' THEN 1 END) AS completed_orders
+FROM suppliers s
+LEFT JOIN product_suppliers ps ON s.supplier_id = ps.supplier_id
+LEFT JOIN purchase_orders po ON s.supplier_id = po.supplier_id
+WHERE s.is_active = TRUE
+GROUP BY s.supplier_id, s.supplier_name, s.rating
+ORDER BY total_purchase_value DESC;
+
+-- ============================================
+-- PROCEDURE CALL EXAMPLES
+-- ============================================
+
+-- Example: Stock IN operation
+CALL stock_in(1006, 50, 'PO-2024-003', NULL, 'Warehouse Manager', 'Restocking keyboards', @result);
+SELECT @result;
+
+-- Example: Stock OUT operation
+CALL stock_out(1002, 25, 'SALE-003', 'Sales Rep', 'Online order fulfillment', @result);
+SELECT @result;
+
+-- Example: Stock adjustment
+CALL stock_adjustment(1004, -10, 'Damaged items removed', 'Inventory Manager', @result);
+SELECT @result;
+
+-- Example: Get low stock products
+CALL get_low_stock_products();
