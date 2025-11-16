@@ -1,0 +1,1373 @@
+-- ============================================
+-- LIBRARY MANAGEMENT SYSTEM
+-- Complete Book & Loan Management Database
+-- ============================================
+
+-- Drop existing tables if they exist (in reverse order of dependencies)
+DROP TABLE IF EXISTS fines CASCADE;
+DROP TABLE IF EXISTS reservations CASCADE;
+DROP TABLE IF EXISTS loans CASCADE;
+DROP TABLE IF EXISTS book_copies CASCADE;
+DROP TABLE IF EXISTS books CASCADE;
+DROP TABLE IF EXISTS book_authors CASCADE;
+DROP TABLE IF EXISTS authors CASCADE;
+DROP TABLE IF EXISTS categories CASCADE;
+DROP TABLE IF EXISTS members CASCADE;
+DROP TABLE IF EXISTS membership_types CASCADE;
+DROP TABLE IF EXISTS library_branches CASCADE;
+
+-- ============================================
+-- REFERENCE/LOOKUP TABLES
+-- ============================================
+
+-- Library Branches Table
+CREATE TABLE library_branches (
+    branch_id INT PRIMARY KEY,
+    branch_name VARCHAR(100) NOT NULL,
+    address VARCHAR(200),
+    city VARCHAR(100),
+    state VARCHAR(50),
+    postal_code VARCHAR(20),
+    phone VARCHAR(20),
+    email VARCHAR(100),
+    opening_hours VARCHAR(200),
+    manager_name VARCHAR(100),
+    is_active BOOLEAN DEFAULT TRUE,
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Membership Types Table
+CREATE TABLE membership_types (
+    membership_type_id INT PRIMARY KEY,
+    type_name VARCHAR(50) UNIQUE NOT NULL,
+    description TEXT,
+    max_books_allowed INT DEFAULT 5,
+    loan_period_days INT DEFAULT 14,
+    renewal_allowed BOOLEAN DEFAULT TRUE,
+    max_renewals INT DEFAULT 2,
+    annual_fee DECIMAL(10,2) DEFAULT 0.00,
+    fine_per_day DECIMAL(5,2) DEFAULT 0.50,
+    CHECK (max_books_allowed > 0),
+    CHECK (loan_period_days > 0),
+    CHECK (annual_fee >= 0)
+);
+
+-- Categories Table
+CREATE TABLE categories (
+    category_id INT PRIMARY KEY,
+    category_name VARCHAR(100) UNIQUE NOT NULL,
+    description TEXT,
+    parent_category_id INT,
+    is_active BOOLEAN DEFAULT TRUE,
+    CONSTRAINT fk_parent_category 
+        FOREIGN KEY (parent_category_id) 
+        REFERENCES categories(category_id) 
+        ON DELETE SET NULL
+);
+
+-- ============================================
+-- AUTHOR MANAGEMENT
+-- ============================================
+
+CREATE TABLE authors (
+    author_id INT PRIMARY KEY,
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100) NOT NULL,
+    biography TEXT,
+    birth_date DATE,
+    death_date DATE,
+    nationality VARCHAR(50),
+    website VARCHAR(200),
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CHECK (death_date IS NULL OR death_date > birth_date)
+);
+
+-- ============================================
+-- BOOK MANAGEMENT
+-- ============================================
+
+CREATE TABLE books (
+    book_id INT PRIMARY KEY,
+    isbn VARCHAR(20) UNIQUE,
+    title VARCHAR(300) NOT NULL,
+    subtitle VARCHAR(300),
+    category_id INT,
+    publisher VARCHAR(200),
+    publication_year INT,
+    edition VARCHAR(50),
+    language VARCHAR(50) DEFAULT 'English',
+    pages INT,
+    description TEXT,
+    cover_image_url VARCHAR(500),
+    is_active BOOLEAN DEFAULT TRUE,
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CHECK (publication_year >= 1000 AND publication_year <= YEAR(CURRENT_DATE) + 1),
+    CHECK (pages > 0),
+    CONSTRAINT fk_book_category 
+        FOREIGN KEY (category_id) 
+        REFERENCES categories(category_id) 
+        ON DELETE SET NULL
+);
+
+-- Book-Author Relationship (Many-to-Many)
+CREATE TABLE book_authors (
+    book_author_id INT PRIMARY KEY,
+    book_id INT NOT NULL,
+    author_id INT NOT NULL,
+    author_role VARCHAR(50) DEFAULT 'Author',
+    sequence_number INT DEFAULT 1,
+    CHECK (author_role IN ('Author', 'Co-Author', 'Editor', 'Translator', 'Illustrator')),
+    CONSTRAINT fk_ba_book 
+        FOREIGN KEY (book_id) 
+        REFERENCES books(book_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT fk_ba_author 
+        FOREIGN KEY (author_id) 
+        REFERENCES authors(author_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT unique_book_author 
+        UNIQUE (book_id, author_id, author_role)
+);
+
+-- Book Copies (Physical instances of books)
+CREATE TABLE book_copies (
+    copy_id INT PRIMARY KEY,
+    book_id INT NOT NULL,
+    branch_id INT NOT NULL,
+    copy_number VARCHAR(20) UNIQUE NOT NULL,
+    barcode VARCHAR(50) UNIQUE,
+    acquisition_date DATE DEFAULT CURRENT_DATE,
+    cost DECIMAL(10,2),
+    condition_status VARCHAR(20) DEFAULT 'Good',
+    location_shelf VARCHAR(50),
+    status VARCHAR(20) DEFAULT 'Available',
+    notes TEXT,
+    CHECK (condition_status IN ('Excellent', 'Good', 'Fair', 'Poor', 'Damaged', 'Lost')),
+    CHECK (status IN ('Available', 'Checked Out', 'Reserved', 'In Transit', 'Under Repair', 'Lost')),
+    CONSTRAINT fk_copy_book 
+        FOREIGN KEY (book_id) 
+        REFERENCES books(book_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT fk_copy_branch 
+        FOREIGN KEY (branch_id) 
+        REFERENCES library_branches(branch_id) 
+        ON DELETE RESTRICT
+);
+
+-- ============================================
+-- MEMBER MANAGEMENT
+-- ============================================
+
+CREATE TABLE members (
+    member_id INT PRIMARY KEY,
+    membership_number VARCHAR(20) UNIQUE NOT NULL,
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100) NOT NULL,
+    date_of_birth DATE NOT NULL,
+    gender VARCHAR(20),
+    email VARCHAR(100) UNIQUE NOT NULL,
+    phone VARCHAR(20),
+    mobile VARCHAR(20),
+    
+    -- Address
+    address_line1 VARCHAR(200),
+    address_line2 VARCHAR(200),
+    city VARCHAR(100),
+    state VARCHAR(50),
+    postal_code VARCHAR(20),
+    
+    -- Membership Details
+    membership_type_id INT NOT NULL,
+    preferred_branch_id INT,
+    registration_date DATE DEFAULT CURRENT_DATE,
+    membership_expiry_date DATE NOT NULL,
+    
+    -- Status
+    status VARCHAR(20) DEFAULT 'Active',
+    total_fines_owed DECIMAL(10,2) DEFAULT 0.00,
+    books_currently_borrowed INT DEFAULT 0,
+    
+    -- System Fields
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    CHECK (email LIKE '%@%'),
+    CHECK (status IN ('Active', 'Suspended', 'Expired', 'Cancelled')),
+    CHECK (total_fines_owed >= 0),
+    CHECK (books_currently_borrowed >= 0),
+    CHECK (membership_expiry_date > registration_date),
+    
+    CONSTRAINT fk_member_type 
+        FOREIGN KEY (membership_type_id) 
+        REFERENCES membership_types(membership_type_id) 
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_member_branch 
+        FOREIGN KEY (preferred_branch_id) 
+        REFERENCES library_branches(branch_id) 
+        ON DELETE SET NULL
+);
+
+-- ============================================
+-- LOAN MANAGEMENT
+-- ============================================
+
+CREATE TABLE loans (
+    loan_id INT PRIMARY KEY,
+    member_id INT NOT NULL,
+    copy_id INT NOT NULL,
+    branch_id INT NOT NULL,
+    
+    -- Loan Dates
+    checkout_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    due_date DATE NOT NULL,
+    return_date TIMESTAMP,
+    
+    -- Loan Details
+    renewed_count INT DEFAULT 0,
+    status VARCHAR(20) DEFAULT 'Active',
+    
+    -- Staff
+    checked_out_by VARCHAR(100) DEFAULT 'SYSTEM',
+    checked_in_by VARCHAR(100),
+    
+    -- Notes
+    notes TEXT,
+    
+    CHECK (status IN ('Active', 'Returned', 'Overdue', 'Lost')),
+    CHECK (renewed_count >= 0),
+    CHECK (due_date >= DATE(checkout_date)),
+    
+    CONSTRAINT fk_loan_member 
+        FOREIGN KEY (member_id) 
+        REFERENCES members(member_id) 
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_loan_copy 
+        FOREIGN KEY (copy_id) 
+        REFERENCES book_copies(copy_id) 
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_loan_branch 
+        FOREIGN KEY (branch_id) 
+        REFERENCES library_branches(branch_id) 
+        ON DELETE RESTRICT
+);
+
+-- ============================================
+-- RESERVATION MANAGEMENT
+-- ============================================
+
+CREATE TABLE reservations (
+    reservation_id INT PRIMARY KEY,
+    member_id INT NOT NULL,
+    book_id INT NOT NULL,
+    branch_id INT NOT NULL,
+    
+    -- Reservation Details
+    reservation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expiry_date DATE NOT NULL,
+    notified_date TIMESTAMP,
+    fulfilled_date TIMESTAMP,
+    
+    -- Status
+    status VARCHAR(20) DEFAULT 'Active',
+    priority_number INT,
+    
+    -- Notes
+    notes TEXT,
+    
+    CHECK (status IN ('Active', 'Fulfilled', 'Cancelled', 'Expired')),
+    CHECK (expiry_date >= DATE(reservation_date)),
+    
+    CONSTRAINT fk_reservation_member 
+        FOREIGN KEY (member_id) 
+        REFERENCES members(member_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT fk_reservation_book 
+        FOREIGN KEY (book_id) 
+        REFERENCES books(book_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT fk_reservation_branch 
+        FOREIGN KEY (branch_id) 
+        REFERENCES library_branches(branch_id) 
+        ON DELETE RESTRICT,
+    CONSTRAINT unique_active_reservation 
+        UNIQUE (member_id, book_id, status)
+);
+
+-- ============================================
+-- FINES MANAGEMENT
+-- ============================================
+
+CREATE TABLE fines (
+    fine_id INT PRIMARY KEY,
+    loan_id INT NOT NULL,
+    member_id INT NOT NULL,
+    
+    -- Fine Details
+    fine_amount DECIMAL(10,2) NOT NULL,
+    fine_date DATE DEFAULT CURRENT_DATE,
+    reason VARCHAR(200),
+    days_overdue INT,
+    
+    -- Payment
+    payment_status VARCHAR(20) DEFAULT 'Unpaid',
+    payment_date TIMESTAMP,
+    payment_amount DECIMAL(10,2) DEFAULT 0.00,
+    payment_method VARCHAR(30),
+    
+    -- Notes
+    notes TEXT,
+    
+    CHECK (fine_amount >= 0),
+    CHECK (payment_amount >= 0),
+    CHECK (payment_status IN ('Unpaid', 'Partially Paid', 'Paid', 'Waived')),
+    CHECK (payment_method IN ('Cash', 'Credit Card', 'Debit Card', 'Check', 'Online', NULL)),
+    
+    CONSTRAINT fk_fine_loan 
+        FOREIGN KEY (loan_id) 
+        REFERENCES loans(loan_id) 
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_fine_member 
+        FOREIGN KEY (member_id) 
+        REFERENCES members(member_id) 
+        ON DELETE RESTRICT
+);
+
+-- ============================================
+-- INDEXES FOR PERFORMANCE
+-- ============================================
+
+-- Book Indexes
+CREATE INDEX idx_books_category ON books(category_id);
+CREATE INDEX idx_books_isbn ON books(isbn);
+CREATE INDEX idx_books_title ON books(title);
+CREATE INDEX idx_books_year ON books(publication_year);
+
+-- Book Copy Indexes
+CREATE INDEX idx_copies_book ON book_copies(book_id);
+CREATE INDEX idx_copies_branch ON book_copies(branch_id);
+CREATE INDEX idx_copies_status ON book_copies(status);
+CREATE INDEX idx_copies_barcode ON book_copies(barcode);
+
+-- Member Indexes
+CREATE INDEX idx_members_type ON members(membership_type_id);
+CREATE INDEX idx_members_status ON members(status);
+CREATE INDEX idx_members_email ON members(email);
+CREATE INDEX idx_members_expiry ON members(membership_expiry_date);
+
+-- Loan Indexes
+CREATE INDEX idx_loans_member ON loans(member_id);
+CREATE INDEX idx_loans_copy ON loans(copy_id);
+CREATE INDEX idx_loans_status ON loans(status);
+CREATE INDEX idx_loans_due_date ON loans(due_date);
+CREATE INDEX idx_loans_checkout_date ON loans(checkout_date);
+CREATE INDEX idx_loans_overdue ON loans(due_date, status) 
+    WHERE status = 'Active' AND due_date < CURRENT_DATE;
+
+-- Reservation Indexes
+CREATE INDEX idx_reservations_member ON reservations(member_id);
+CREATE INDEX idx_reservations_book ON reservations(book_id);
+CREATE INDEX idx_reservations_status ON reservations(status);
+CREATE INDEX idx_reservations_date ON reservations(reservation_date);
+
+-- Fine Indexes
+CREATE INDEX idx_fines_loan ON fines(loan_id);
+CREATE INDEX idx_fines_member ON fines(member_id);
+CREATE INDEX idx_fines_status ON fines(payment_status);
+CREATE INDEX idx_fines_unpaid ON fines(member_id, payment_status) 
+    WHERE payment_status = 'Unpaid';
+
+-- ============================================
+-- STORED PROCEDURES
+-- ============================================
+
+-- Procedure 1: Check Out Book
+DELIMITER //
+CREATE PROCEDURE checkout_book(
+    IN p_member_id INT,
+    IN p_copy_id INT,
+    IN p_branch_id INT,
+    IN p_staff_name VARCHAR(100),
+    OUT p_loan_id INT,
+    OUT p_result VARCHAR(200)
+)
+BEGIN
+    DECLARE v_member_status VARCHAR(20);
+    DECLARE v_copy_status VARCHAR(20);
+    DECLARE v_books_borrowed INT;
+    DECLARE v_max_books INT;
+    DECLARE v_loan_period INT;
+    DECLARE v_has_overdue BOOLEAN;
+    DECLARE v_membership_expired BOOLEAN;
+    DECLARE v_fines_owed DECIMAL(10,2);
+    
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SET p_loan_id = NULL;
+        SET p_result = 'Error: Checkout failed';
+    END;
+    
+    START TRANSACTION;
+    
+    -- Check member status and details
+    SELECT 
+        status, 
+        books_currently_borrowed,
+        total_fines_owed,
+        membership_expiry_date < CURRENT_DATE,
+        mt.max_books_allowed,
+        mt.loan_period_days
+    INTO 
+        v_member_status,
+        v_books_borrowed,
+        v_fines_owed,
+        v_membership_expired,
+        v_max_books,
+        v_loan_period
+    FROM members m
+    JOIN membership_types mt ON m.membership_type_id = mt.membership_type_id
+    WHERE m.member_id = p_member_id;
+    
+    -- Check if member has overdue books
+    SELECT COUNT(*) > 0 INTO v_has_overdue
+    FROM loans
+    WHERE member_id = p_member_id
+      AND status = 'Active'
+      AND due_date < CURRENT_DATE;
+    
+    -- Check copy status
+    SELECT status INTO v_copy_status
+    FROM book_copies
+    WHERE copy_id = p_copy_id;
+    
+    -- Validation checks
+    IF v_member_status != 'Active' THEN
+        SET p_loan_id = NULL;
+        SET p_result = CONCAT('Error: Member status is ', v_member_status);
+        ROLLBACK;
+    ELSEIF v_membership_expired THEN
+        SET p_loan_id = NULL;
+        SET p_result = 'Error: Membership has expired';
+        ROLLBACK;
+    ELSEIF v_has_overdue THEN
+        SET p_loan_id = NULL;
+        SET p_result = 'Error: Member has overdue books';
+        ROLLBACK;
+    ELSEIF v_fines_owed > 10.00 THEN
+        SET p_loan_id = NULL;
+        SET p_result = CONCAT('Error: Member has outstanding fines: $', FORMAT(v_fines_owed, 2));
+        ROLLBACK;
+    ELSEIF v_books_borrowed >= v_max_books THEN
+        SET p_loan_id = NULL;
+        SET p_result = 'Error: Maximum book limit reached';
+        ROLLBACK;
+    ELSEIF v_copy_status != 'Available' THEN
+        SET p_loan_id = NULL;
+        SET p_result = CONCAT('Error: Book copy is ', v_copy_status);
+        ROLLBACK;
+    ELSE
+        -- Get next loan ID
+        SELECT COALESCE(MAX(loan_id), 0) + 1 INTO p_loan_id FROM loans;
+        
+        -- Create loan
+        INSERT INTO loans (
+            loan_id, member_id, copy_id, branch_id,
+            due_date, status, checked_out_by
+        ) VALUES (
+            p_loan_id, p_member_id, p_copy_id, p_branch_id,
+            DATE_ADD(CURRENT_DATE, INTERVAL v_loan_period DAY),
+            'Active', p_staff_name
+        );
+        
+        -- Update copy status
+        UPDATE book_copies
+        SET status = 'Checked Out'
+        WHERE copy_id = p_copy_id;
+        
+        -- Update member's book count
+        UPDATE members
+        SET books_currently_borrowed = books_currently_borrowed + 1,
+            last_updated = CURRENT_TIMESTAMP
+        WHERE member_id = p_member_id;
+        
+        COMMIT;
+        SET p_result = CONCAT('Success: Book checked out. Due date: ', 
+                             DATE_FORMAT(DATE_ADD(CURRENT_DATE, INTERVAL v_loan_period DAY), '%Y-%m-%d'));
+    END IF;
+END //
+DELIMITER ;
+
+-- Procedure 2: Return Book
+DELIMITER //
+CREATE PROCEDURE return_book(
+    IN p_loan_id INT,
+    IN p_staff_name VARCHAR(100),
+    OUT p_fine_amount DECIMAL(10,2),
+    OUT p_result VARCHAR(200)
+)
+BEGIN
+    DECLARE v_member_id INT;
+    DECLARE v_copy_id INT;
+    DECLARE v_due_date DATE;
+    DECLARE v_days_overdue INT;
+    DECLARE v_fine_per_day DECIMAL(5,2);
+    DECLARE v_loan_status VARCHAR(20);
+    DECLARE v_fine_id INT;
+    
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SET p_result = 'Error: Return failed';
+    END;
+    
+    START TRANSACTION;
+    
+    -- Get loan details
+    SELECT 
+        l.member_id,
+        l.copy_id,
+        l.due_date,
+        l.status,
+        mt.fine_per_day
+    INTO 
+        v_member_id,
+        v_copy_id,
+        v_due_date,
+        v_loan_status,
+        v_fine_per_day
+    FROM loans l
+    JOIN members m ON l.member_id = m.member_id
+    JOIN membership_types mt ON m.membership_type_id = mt.membership_type_id
+    WHERE l.loan_id = p_loan_id;
+    
+    IF v_loan_status != 'Active' THEN
+        SET p_result = CONCAT('Error: Loan is already ', v_loan_status);
+        ROLLBACK;
+    ELSE
+        -- Calculate overdue days
+        SET v_days_overdue = GREATEST(0, DATEDIFF(CURRENT_DATE, v_due_date));
+        SET p_fine_amount = v_days_overdue * v_fine_per_day;
+        
+        -- Update loan record
+        UPDATE loans
+        SET return_date = CURRENT_TIMESTAMP,
+            status = 'Returned',
+            checked_in_by = p_staff_name
+        WHERE loan_id = p_loan_id;
+        
+        -- Update copy status
+        UPDATE book_copies
+        SET status = 'Available'
+        WHERE copy_id = v_copy_id;
+        
+        -- Update member's book count
+        UPDATE members
+        SET books_currently_borrowed = books_currently_borrowed - 1,
+            last_updated = CURRENT_TIMESTAMP
+        WHERE member_id = v_member_id;
+        
+        -- Create fine if overdue
+        IF v_days_overdue > 0 THEN
+            SELECT COALESCE(MAX(fine_id), 0) + 1 INTO v_fine_id FROM fines;
+            
+            INSERT INTO fines (
+                fine_id, loan_id, member_id, fine_amount,
+                reason, days_overdue, payment_status
+            ) VALUES (
+                v_fine_id, p_loan_id, v_member_id, p_fine_amount,
+                'Overdue return', v_days_overdue, 'Unpaid'
+            );
+            
+            -- Update member's total fines
+            UPDATE members
+            SET total_fines_owed = total_fines_owed + p_fine_amount
+            WHERE member_id = v_member_id;
+            
+            SET p_result = CONCAT('Success: Book returned. Fine: $', FORMAT(p_fine_amount, 2), 
+                                 ' (', v_days_overdue, ' days overdue)');
+        ELSE
+            SET p_result = 'Success: Book returned on time';
+        END IF;
+        
+        COMMIT;
+    END IF;
+END //
+DELIMITER ;
+
+-- Procedure 3: Reserve Book
+DELIMITER //
+CREATE PROCEDURE reserve_book(
+    IN p_member_id INT,
+    IN p_book_id INT,
+    IN p_branch_id INT,
+    OUT p_reservation_id INT,
+    OUT p_result VARCHAR(200)
+)
+BEGIN
+    DECLARE v_member_status VARCHAR(20);
+    DECLARE v_has_overdue BOOLEAN;
+    DECLARE v_available_copies INT;
+    DECLARE v_active_reservations INT;
+    DECLARE v_existing_reservation INT;
+    DECLARE v_membership_expired BOOLEAN;
+    DECLARE v_priority_number INT;
+    
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SET p_reservation_id = NULL;
+        SET p_result = 'Error: Reservation failed';
+    END;
+    
+    START TRANSACTION;
+    
+    -- Check member status
+    SELECT 
+        status,
+        membership_expiry_date < CURRENT_DATE
+    INTO 
+        v_member_status,
+        v_membership_expired
+    FROM members
+    WHERE member_id = p_member_id;
+    
+    -- Check for overdue books
+    SELECT COUNT(*) > 0 INTO v_has_overdue
+    FROM loans
+    WHERE member_id = p_member_id
+      AND status = 'Active'
+      AND due_date < CURRENT_DATE;
+    
+    -- Check for existing active reservation
+    SELECT COUNT(*) INTO v_existing_reservation
+    FROM reservations
+    WHERE member_id = p_member_id
+      AND book_id = p_book_id
+      AND status = 'Active';
+    
+    -- Check available copies
+    SELECT COUNT(*) INTO v_available_copies
+    FROM book_copies
+    WHERE book_id = p_book_id
+      AND branch_id = p_branch_id
+      AND status = 'Available';
+    
+    -- Count active reservations for priority
+    SELECT COUNT(*) INTO v_active_reservations
+    FROM reservations
+    WHERE book_id = p_book_id
+      AND status = 'Active';
+    
+    -- Validation
+    IF v_member_status != 'Active' THEN
+        SET p_result = CONCAT('Error: Member status is ', v_member_status);
+        ROLLBACK;
+    ELSEIF v_membership_expired THEN
+        SET p_result = 'Error: Membership has expired';
+        ROLLBACK;
+    ELSEIF v_has_overdue THEN
+        SET p_result = 'Error: Cannot reserve - member has overdue books';
+        ROLLBACK;
+    ELSEIF v_existing_reservation > 0 THEN
+        SET p_result = 'Error: Book already reserved by this member';
+        ROLLBACK;
+    ELSEIF v_available_copies > 0 THEN
+        SET p_result = 'Info: Book is currently available for checkout';
+        ROLLBACK;
+    ELSE
+        -- Get next reservation ID
+        SELECT COALESCE(MAX(reservation_id), 0) + 1 INTO p_reservation_id 
+        FROM reservations;
+        
+        -- Create reservation
+        SET v_priority_number = v_active_reservations + 1;
+        
+        INSERT INTO reservations (
+            reservation_id, member_id, book_id, branch_id,
+            expiry_date, status, priority_number
+        ) VALUES (
+            p_reservation_id, p_member_id, p_book_id, p_branch_id,
+            DATE_ADD(CURRENT_DATE, INTERVAL 7 DAY),
+            'Active', v_priority_number
+        );
+        
+        COMMIT;
+        SET p_result = CONCAT('Success: Book reserved. Position in queue: ', v_priority_number);
+    END IF;
+END //
+DELIMITER ;
+
+-- Procedure 4: Renew Loan
+DELIMITER //
+CREATE PROCEDURE renew_loan(
+    IN p_loan_id INT,
+    OUT p_new_due_date DATE,
+    OUT p_result VARCHAR(200)
+)
+BEGIN
+    DECLARE v_member_id INT;
+    DECLARE v_book_id INT;
+    DECLARE v_renewed_count INT;
+    DECLARE v_max_renewals INT;
+    DECLARE v_loan_period INT;
+    DECLARE v_has_reservation BOOLEAN;
+    DECLARE v_is_overdue BOOLEAN;
+    DECLARE v_loan_status VARCHAR(20);
+    
+    -- Get loan details
+    SELECT 
+        l.member_id,
+        bc.book_id,
+        l.renewed_count,
+        l.status,
+        l.due_date < CURRENT_DATE,
+        mt.max_renewals,
+        mt.loan_period_days
+    INTO 
+        v_member_id,
+        v_book_id,
+        v_renewed_count,
+        v_loan_status,
+        v_is_overdue,
+        v_max_renewals,
+        v_loan_period
+    FROM loans l
+    JOIN book_copies bc ON l.copy_id = bc.copy_id
+    JOIN members m ON l.member_id = m.member_id
+    JOIN membership_types mt ON m.membership_type_id = mt.membership_type_id
+    WHERE l.loan_id = p_loan_id;
+    
+    -- Check for reservations
+    SELECT COUNT(*) > 0 INTO v_has_reservation
+    FROM reservations
+    WHERE book_id = v_book_id
+      AND status = 'Active';
+    
+    -- Validation
+    IF v_loan_status != 'Active' THEN
+        SET p_result = CONCAT('Error: Loan is ', v_loan_status);
+    ELSEIF v_is_overdue THEN
+        SET p_result = 'Error: Cannot renew overdue books';
+    ELSEIF v_renewed_count >= v_max_renewals THEN
+        SET p_result = 'Error: Maximum renewals reached';
+    ELSEIF v_has_reservation THEN
+        SET p_result = 'Error: Book has active reservations';
+    ELSE
+        -- Renew loan
+        SET p_new_due_date = DATE_ADD(CURRENT_DATE, INTERVAL v_loan_period DAY);
+        
+        UPDATE loans
+        SET due_date = p_new_due_date,
+            renewed_count = renewed_count + 1
+        WHERE loan_id = p_loan_id;
+        
+        SET p_result = CONCAT('Success: Loan renewed. New due date: ', 
+                             DATE_FORMAT(p_new_due_date, '%Y-%m-%d'));
+    END IF;
+END //
+DELIMITER ;
+
+-- Procedure 5: Calculate and Update Overdue Fines
+DELIMITER //
+CREATE PROCEDURE calculate_overdue_fines()
+BEGIN
+    DECLARE v_fine_id INT;
+    DECLARE v_done INT DEFAULT FALSE;
+    DECLARE v_loan_id INT;
+    DECLARE v_member_id INT;
+    DECLARE v_days_overdue INT;
+    DECLARE v_fine_per_day DECIMAL(5,2);
+    DECLARE v_fine_amount DECIMAL(10,2);
+    DECLARE v_existing_fine INT;
+    
+    DECLARE overdue_cursor CURSOR FOR
+        SELECT 
+            l.loan_id,
+            l.member_id,
+            DATEDIFF(CURRENT_DATE, l.due_date) AS days_overdue,
+            mt.fine_per_day
+        FROM loans l
+        JOIN members m ON l.member_id = m.member_id
+        JOIN membership_types mt ON m.membership_type_id = mt.membership_type_id
+        WHERE l.status = 'Active'
+          AND l.due_date < CURRENT_DATE;
+    
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_done = TRUE;
+    
+    OPEN overdue_cursor;
+    
+    read_loop: LOOP
+        FETCH overdue_cursor INTO v_loan_id, v_member_id, v_days_overdue, v_fine_per_day;
+        
+        IF v_done THEN
+            LEAVE read_loop;
+        END IF;
+        
+        -- Calculate fine
+        SET v_fine_amount = v_days_overdue * v_fine_per_day;
+        
+        -- Check if fine already exists for this loan
+        SELECT COUNT(*) INTO v_existing_fine
+        FROM fines
+        WHERE loan_id = v_loan_id;
+        
+        IF v_existing_fine = 0 THEN
+            -- Create new fine
+            SELECT COALESCE(MAX(fine_id), 0) + 1 INTO v_fine_id FROM fines;
+            
+            INSERT INTO fines (
+                fine_id, loan_id, member_id, fine_amount,
+                reason, days_overdue, payment_status
+            ) VALUES (
+                v_fine_id, v_loan_id, v_member_id, v_fine_amount,
+                'Overdue return', v_days_overdue, 'Unpaid'
+            );
+            
+            -- Update member's total fines
+            UPDATE members
+            SET total_fines_owed = total_fines_owed + v_fine_amount
+            WHERE member_id = v_member_id;
+        ELSE
+            -- Update existing fine
+            UPDATE fines
+            SET fine_amount = v_fine_amount,
+                days_overdue = v_days_overdue
+            WHERE loan_id = v_loan_id
+              AND payment_status = 'Unpaid';
+        END IF;
+        
+        -- Update loan status
+        UPDATE loans
+        SET status = 'Overdue'
+        WHERE loan_id = v_loan_id;
+        
+    END LOOP;
+    
+    CLOSE overdue_cursor;
+END //
+DELIMITER ;
+
+-- ============================================
+-- TRIGGERS
+-- ============================================
+
+-- Trigger 1: Prevent borrowing if member has overdue items
+DELIMITER //
+CREATE TRIGGER check_overdue_before_checkout
+BEFORE INSERT ON loans
+FOR EACH ROW
+BEGIN
+    DECLARE v_has_overdue INT;
+    DECLARE v_member_status VARCHAR(20);
+    DECLARE v_fines_owed DECIMAL(10,2);
+    
+    -- Check for overdue books
+    SELECT COUNT(*) INTO v_has_overdue
+    FROM loans
+    WHERE member_id = NEW.member_id
+      AND status IN ('Active', 'Overdue')
+      AND due_date < CURRENT_DATE;
+    
+    -- Get member status and fines
+    SELECT status, total_fines_owed 
+    INTO v_member_status, v_fines_owed
+    FROM members
+    WHERE member_id = NEW.member_id;
+    
+    -- Prevent checkout if has overdue books
+    IF v_has_overdue > 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Cannot checkout: Member has overdue books';
+    END IF;
+    
+    -- Prevent checkout if member has excessive fines
+    IF v_fines_owed > 10.00 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Cannot checkout: Member has outstanding fines exceeding $10.00';
+    END IF;
+    
+    -- Prevent checkout if member is not active
+    IF v_member_status != 'Active' THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Cannot checkout: Member account is not active';
+    END IF;
+END //
+DELIMITER ;
+
+-- Trigger 2: Update loan status to overdue
+DELIMITER //
+CREATE TRIGGER update_overdue_loans
+BEFORE UPDATE ON loans
+FOR EACH ROW
+BEGIN
+    IF NEW.status = 'Active' AND NEW.due_date < CURRENT_DATE THEN
+        SET NEW.status = 'Overdue';
+    END IF;
+END //
+DELIMITER ;
+
+-- Trigger 3: Prevent reservation if member has overdue books
+DELIMITER //
+CREATE TRIGGER check_overdue_before_reservation
+BEFORE INSERT ON reservations
+FOR EACH ROW
+BEGIN
+    DECLARE v_has_overdue INT;
+    
+    SELECT COUNT(*) INTO v_has_overdue
+    FROM loans
+    WHERE member_id = NEW.member_id
+      AND status IN ('Active', 'Overdue')
+      AND due_date < CURRENT_DATE;
+    
+    IF v_has_overdue > 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Cannot reserve: Member has overdue books';
+    END IF;
+END //
+DELIMITER ;
+
+-- Trigger 4: Update reservation priority when fulfilled
+DELIMITER //
+CREATE TRIGGER reorder_reservations_after_fulfill
+AFTER UPDATE ON reservations
+FOR EACH ROW
+BEGIN
+    IF NEW.status = 'Fulfilled' AND OLD.status = 'Active' THEN
+        -- Reorder remaining reservations
+        UPDATE reservations
+        SET priority_number = priority_number - 1
+        WHERE book_id = NEW.book_id
+          AND status = 'Active'
+          AND priority_number > OLD.priority_number;
+    END IF;
+END //
+DELIMITER ;
+
+-- Trigger 5: Notify next reservation when book returned
+DELIMITER //
+CREATE TRIGGER notify_reservation_on_return
+AFTER UPDATE ON loans
+FOR EACH ROW
+BEGIN
+    DECLARE v_book_id INT;
+    DECLARE v_next_reservation_id INT;
+    
+    IF NEW.status = 'Returned' AND OLD.status IN ('Active', 'Overdue') THEN
+        -- Get book_id from the returned copy
+        SELECT book_id INTO v_book_id
+        FROM book_copies
+        WHERE copy_id = NEW.copy_id;
+        
+        -- Find next active reservation
+        SELECT reservation_id INTO v_next_reservation_id
+        FROM reservations
+        WHERE book_id = v_book_id
+          AND status = 'Active'
+        ORDER BY priority_number
+        LIMIT 1;
+        
+        -- Update reservation as notified
+        IF v_next_reservation_id IS NOT NULL THEN
+            UPDATE reservations
+            SET notified_date = CURRENT_TIMESTAMP
+            WHERE reservation_id = v_next_reservation_id;
+        END IF;
+    END IF;
+END //
+DELIMITER ;
+
+-- Trigger 6: Auto-update member timestamp
+DELIMITER //
+CREATE TRIGGER update_member_timestamp
+BEFORE UPDATE ON members
+FOR EACH ROW
+BEGIN
+    SET NEW.last_updated = CURRENT_TIMESTAMP;
+END //
+DELIMITER ;
+
+-- ============================================
+-- VIEWS FOR LIBRARIANS
+-- ============================================
+
+-- View 1: Available Books
+CREATE OR REPLACE VIEW vw_available_books AS
+SELECT 
+    b.book_id,
+    b.isbn,
+    b.title,
+    b.subtitle,
+    GROUP_CONCAT(DISTINCT CONCAT(a.first_name, ' ', a.last_name) 
+        ORDER BY ba.sequence_number SEPARATOR ', ') AS authors,
+    c.category_name,
+    b.publisher,
+    b.publication_year,
+    b.language,
+    lb.branch_name,
+    COUNT(bc.copy_id) AS total_copies,
+    SUM(CASE WHEN bc.status = 'Available' THEN 1 ELSE 0 END) AS available_copies,
+    SUM(CASE WHEN bc.status = 'Checked Out' THEN 1 ELSE 0 END) AS checked_out_copies,
+    SUM(CASE WHEN bc.status = 'Reserved' THEN 1 ELSE 0 END) AS reserved_copies
+FROM books b
+LEFT JOIN book_authors ba ON b.book_id = ba.book_id
+LEFT JOIN authors a ON ba.author_id = a.author_id
+LEFT JOIN categories c ON b.category_id = c.category_id
+JOIN book_copies bc ON b.book_id = bc.book_id
+JOIN library_branches lb ON bc.branch_id = lb.branch_id
+WHERE b.is_active = TRUE
+GROUP BY b.book_id, b.isbn, b.title, b.subtitle, c.category_name,
+         b.publisher, b.publication_year, b.language, lb.branch_name
+HAVING available_copies > 0
+ORDER BY b.title;
+
+-- View 2: Currently Checked Out Books
+CREATE OR REPLACE VIEW vw_checked_out_books AS
+SELECT 
+    l.loan_id,
+    l.checkout_date,
+    l.due_date,
+    DATEDIFF(l.due_date, CURRENT_DATE) AS days_until_due,
+    CASE 
+        WHEN l.due_date < CURRENT_DATE THEN 'OVERDUE'
+        WHEN DATEDIFF(l.due_date, CURRENT_DATE) <= 3 THEN 'DUE SOON'
+        ELSE 'ON TIME'
+    END AS loan_status,
+    m.membership_number,
+    CONCAT(m.first_name, ' ', m.last_name) AS member_name,
+    m.email AS member_email,
+    m.phone AS member_phone,
+    b.title AS book_title,
+    CONCAT(a.first_name, ' ', a.last_name) AS author_name,
+    bc.copy_number,
+    lb.branch_name
+FROM loans l
+JOIN members m ON l.member_id = m.member_id
+JOIN book_copies bc ON l.copy_id = bc.copy_id
+JOIN books b ON bc.book_id = b.book_id
+LEFT JOIN book_authors ba ON b.book_id = ba.book_id AND ba.sequence_number = 1
+LEFT JOIN authors a ON ba.author_id = a.author_id
+JOIN library_branches lb ON l.branch_id = lb.branch_id
+WHERE l.status IN ('Active', 'Overdue')
+ORDER BY l.due_date;
+
+-- View 3: Overdue Books Report
+CREATE OR REPLACE VIEW vw_overdue_books AS
+SELECT 
+    l.loan_id,
+    l.checkout_date,
+    l.due_date,
+    DATEDIFF(CURRENT_DATE, l.due_date) AS days_overdue,
+    m.membership_number,
+    CONCAT(m.first_name, ' ', m.last_name) AS member_name,
+    m.email,
+    m.phone,
+    m.total_fines_owed,
+    b.title AS book_title,
+    b.isbn,
+    bc.copy_number,
+    lb.branch_name,
+    COALESCE(f.fine_amount, 0) AS fine_amount
+FROM loans l
+JOIN members m ON l.member_id = m.member_id
+JOIN book_copies bc ON l.copy_id = bc.copy_id
+JOIN books b ON bc.book_id = b.book_id
+JOIN library_branches lb ON l.branch_id = lb.branch_id
+LEFT JOIN fines f ON l.loan_id = f.loan_id AND f.payment_status = 'Unpaid'
+WHERE l.status IN ('Active', 'Overdue')
+  AND l.due_date < CURRENT_DATE
+ORDER BY days_overdue DESC;
+
+-- View 4: Active Reservations
+CREATE OR REPLACE VIEW vw_active_reservations AS
+SELECT 
+    r.reservation_id,
+    r.reservation_date,
+    r.expiry_date,
+    r.priority_number,
+    CASE WHEN r.notified_date IS NOT NULL THEN 'Notified' ELSE 'Waiting' END AS notification_status,
+    m.membership_number,
+    CONCAT(m.first_name, ' ', m.last_name) AS member_name,
+    m.email,
+    m.phone,
+    b.title AS book_title,
+    b.isbn,
+    GROUP_CONCAT(DISTINCT CONCAT(a.first_name, ' ', a.last_name) SEPARATOR ', ') AS authors,
+    lb.branch_name,
+    (SELECT COUNT(*) FROM book_copies bc 
+     WHERE bc.book_id = b.book_id AND bc.status = 'Checked Out') AS copies_checked_out
+FROM reservations r
+JOIN members m ON r.member_id = m.member_id
+JOIN books b ON r.book_id = b.book_id
+LEFT JOIN book_authors ba ON b.book_id = ba.book_id
+LEFT JOIN authors a ON ba.author_id = a.author_id
+JOIN library_branches lb ON r.branch_id = lb.branch_id
+WHERE r.status = 'Active'
+GROUP BY r.reservation_id, r.reservation_date, r.expiry_date, r.priority_number,
+         r.notified_date, m.membership_number, m.first_name, m.last_name,
+         m.email, m.phone, b.title, b.isbn, b.book_id, lb.branch_name
+ORDER BY b.title, r.priority_number;
+
+-- View 5: Member Activity Summary
+CREATE OR REPLACE VIEW vw_member_summary AS
+SELECT 
+    m.member_id,
+    m.membership_number,
+    CONCAT(m.first_name, ' ', m.last_name) AS member_name,
+    m.email,
+    mt.type_name AS membership_type,
+    m.status,
+    m.registration_date,
+    m.membership_expiry_date,
+    m.books_currently_borrowed,
+    m.total_fines_owed,
+    COUNT(DISTINCT l.loan_id) AS total_loans,
+    COUNT(DISTINCT CASE WHEN l.status = 'Active' THEN l.loan_id END) AS active_loans,
+    COUNT(DISTINCT CASE WHEN l.status = 'Overdue' THEN l.loan_id END) AS overdue_loans,
+    COUNT(DISTINCT r.reservation_id) AS active_reservations,
+    lb.branch_name AS preferred_branch
+FROM members m
+JOIN membership_types mt ON m.membership_type_id = mt.membership_type_id
+LEFT JOIN loans l ON m.member_id = l.member_id
+LEFT JOIN reservations r ON m.member_id = r.member_id AND r.status = 'Active'
+LEFT JOIN library_branches lb ON m.preferred_branch_id = lb.branch_id
+GROUP BY m.member_id, m.membership_number, m.first_name, m.last_name,
+         m.email, mt.type_name, m.status, m.registration_date,
+         m.membership_expiry_date, m.books_currently_borrowed,
+         m.total_fines_owed, lb.branch_name;
+
+-- View 6: Popular Books Report
+CREATE OR REPLACE VIEW vw_popular_books AS
+SELECT 
+    b.book_id,
+    b.isbn,
+    b.title,
+    GROUP_CONCAT(DISTINCT CONCAT(a.first_name, ' ', a.last_name) 
+        ORDER BY ba.sequence_number SEPARATOR ', ') AS authors,
+    c.category_name,
+    COUNT(DISTINCT l.loan_id) AS total_checkouts,
+    COUNT(DISTINCT CASE WHEN l.checkout_date >= DATE_SUB(CURRENT_DATE, INTERVAL 30 DAY) 
+          THEN l.loan_id END) AS checkouts_last_30_days,
+    COUNT(DISTINCT r.reservation_id) AS active_reservations,
+    COUNT(DISTINCT bc.copy_id) AS total_copies,
+    SUM(CASE WHEN bc.status = 'Available' THEN 1 ELSE 0 END) AS available_copies
+FROM books b
+LEFT JOIN book_authors ba ON b.book_id = ba.book_id
+LEFT JOIN authors a ON ba.author_id = a.author_id
+LEFT JOIN categories c ON b.category_id = c.category_id
+LEFT JOIN book_copies bc ON b.book_id = bc.book_id
+LEFT JOIN loans l ON bc.copy_id = l.copy_id
+LEFT JOIN reservations r ON b.book_id = r.book_id AND r.status = 'Active'
+WHERE b.is_active = TRUE
+GROUP BY b.book_id, b.isbn, b.title, c.category_name
+HAVING total_checkouts > 0
+ORDER BY total_checkouts DESC, checkouts_last_30_days DESC;
+
+-- View 7: Financial Report - Fines
+CREATE OR REPLACE VIEW vw_fines_report AS
+SELECT 
+    DATE(f.fine_date) AS fine_date,
+    COUNT(*) AS total_fines,
+    SUM(f.fine_amount) AS total_fine_amount,
+    SUM(CASE WHEN f.payment_status = 'Paid' THEN f.payment_amount ELSE 0 END) AS total_collected,
+    SUM(CASE WHEN f.payment_status = 'Unpaid' THEN f.fine_amount ELSE 0 END) AS total_outstanding,
+    AVG(f.days_overdue) AS avg_days_overdue
+FROM fines f
+GROUP BY DATE(f.fine_date)
+ORDER BY fine_date DESC;
+
+-- ============================================
+-- SAMPLE DATA
+-- ============================================
+
+-- Insert Library Branches
+INSERT INTO library_branches VALUES
+(1, 'Main Library', '100 Library Street', 'Springfield', 'IL', '62701', '+1-555-1000', 'main@library.org', 'Mon-Sat 9AM-8PM, Sun 12PM-6PM', 'Jane Smith', TRUE, CURRENT_TIMESTAMP),
+(2, 'North Branch', '250 North Avenue', 'Springfield', 'IL', '62702', '+1-555-1001', 'north@library.org', 'Mon-Sat 10AM-6PM', 'John Davis', TRUE, CURRENT_TIMESTAMP),
+(3, 'South Branch', '350 South Boulevard', 'Springfield', 'IL', '62703', '+1-555-1002', 'south@library.org', 'Mon-Fri 9AM-7PM, Sat 10AM-5PM', 'Mary Johnson', TRUE, CURRENT_TIMESTAMP);
+
+-- Insert Membership Types
+INSERT INTO membership_types VALUES
+(1, 'Standard Adult', 'Standard membership for adults', 5, 14, TRUE, 2, 0.00, 0.50),
+(2, 'Student', 'Discounted membership for students', 7, 21, TRUE, 3, 0.00, 0.25),
+(3, 'Premium', 'Premium membership with extended privileges', 10, 21, TRUE, 4, 50.00, 0.50),
+(4, 'Child', 'Membership for children under 13', 3, 14, TRUE, 2, 0.00, 0.25),
+(5, 'Senior', 'Membership for seniors 65+', 7, 21, TRUE, 3, 0.00, 0.25);
+
+-- Insert Categories
+INSERT INTO categories VALUES
+(1, 'Fiction', 'Fiction and literature', NULL, TRUE),
+(2, 'Non-Fiction', 'Non-fiction and educational', NULL, TRUE),
+(3, 'Science Fiction', 'Science fiction novels', 1, TRUE),
+(4, 'Mystery', 'Mystery and thriller novels', 1, TRUE),
+(5, 'Biography', 'Biographical works', 2, TRUE),
+(6, 'History', 'Historical books', 2, TRUE),
+(7, 'Science', 'Scientific literature', 2, TRUE),
+(8, 'Technology', 'Technology and computing', 2, TRUE),
+(9, 'Children', 'Children books', NULL, TRUE),
+(10, 'Young Adult', 'Young adult fiction', 1, TRUE);
+
+-- Insert Authors
+INSERT INTO authors VALUES
+(1, 'J.K.', 'Rowling', 'British author best known for Harry Potter series', '1965-07-31', NULL, 'British', 'https://www.jkrowling.com', CURRENT_TIMESTAMP),
+(2, 'George', 'Orwell', 'English novelist and essayist', '1903-06-25', '1950-01-21', 'British', NULL, CURRENT_TIMESTAMP),
+(3, 'Isaac', 'Asimov', 'American science fiction writer', '1920-01-02', '1992-04-06', 'American', NULL, CURRENT_TIMESTAMP),
+(4, 'Agatha', 'Christie', 'English mystery writer', '1890-09-15', '1976-01-12', 'British', NULL, CURRENT_TIMESTAMP),
+(5, 'Stephen', 'King', 'American horror and suspense author', '1947-09-21', NULL, 'American', 'https://stephenking.com', CURRENT_TIMESTAMP),
+(6, 'Malcolm', 'Gladwell', 'Canadian journalist and author', '1963-09-03', NULL, 'Canadian', NULL, CURRENT_TIMESTAMP),
+(7, 'Yuval Noah', 'Harari', 'Israeli historian and philosopher', '1976-02-24', NULL, 'Israeli', NULL, CURRENT_TIMESTAMP);
+
+-- Insert Books
+INSERT INTO books VALUES
+(1, '978-0439708180', 'Harry Potter and the Sorcerers Stone', NULL, 1, 'Scholastic', 1998, '1st US Edition', 'English', 309, 'First book in the Harry Potter series', NULL, TRUE, CURRENT_TIMESTAMP),
+(2, '978-0451524935', '1984', NULL, 3, 'Signet Classic', 1950, 'Reprint', 'English', 328, 'Dystopian social science fiction novel', NULL, TRUE, CURRENT_TIMESTAMP),
+(3, '978-0553293357', 'Foundation', NULL, 3, 'Spectra', 1951, 'Reprint', 'English', 255, 'First book in the Foundation series', NULL, TRUE, CURRENT_TIMESTAMP),
+(4, '978-0062073488', 'Murder on the Orient Express', NULL, 4, 'William Morrow', 1934, 'Reprint', 'English', 256, 'Hercule Poirot mystery', NULL, TRUE, CURRENT_TIMESTAMP),
+(5, '978-0307887894', 'The Shining', NULL, 4, 'Anchor', 1977, 'Reprint', 'English', 447, 'Horror novel set in the Overlook Hotel', NULL, TRUE, CURRENT_TIMESTAMP),
+(6, '978-0316346627', 'Outliers', 'The Story of Success', 2, 'Back Bay Books', 2008, '1st Edition', 'English', 309, 'Non-fiction book on success factors', NULL, TRUE, CURRENT_TIMESTAMP),
+(7, '978-0062316110', 'Sapiens', 'A Brief History of Humankind', 6, 'Harper', 2015, '1st Edition', 'English', 443, 'History of human species', NULL, TRUE, CURRENT_TIMESTAMP),
+(8, '978-0439139595', 'Harry Potter and the Goblet of Fire', NULL, 1, 'Scholastic', 2000, '1st Edition', 'English', 734, 'Fourth book in Harry Potter series', NULL, TRUE, CURRENT_TIMESTAMP);
+
+-- Insert Book-Author Relationships
+INSERT INTO book_authors VALUES
+(1, 1, 1, 'Author', 1),
+(2, 2, 2, 'Author', 1),
+(3, 3, 3, 'Author', 1),
+(4, 4, 4, 'Author', 1),
+(5, 5, 5, 'Author', 1),
+(6, 6, 6, 'Author', 1),
+(7, 7, 7, 'Author', 1),
+(8, 8, 1, 'Author', 1);
+
+-- Insert Book Copies
+INSERT INTO book_copies VALUES
+(1, 1, 1, 'MC-001-001', 'BC1001001', '2020-01-15', 12.99, 'Good', 'A-12', 'Available', NULL),
+(2, 1, 1, 'MC-001-002', 'BC1001002', '2020-01-15', 12.99, 'Good', 'A-12', 'Available', NULL),
+(3, 1, 2, 'NC-001-001', 'BC2001001', '2020-02-10', 12.99, 'Good', 'A-05', 'Available', NULL),
+(4, 2, 1, 'MC-002-001', 'BC1002001', '2019-06-20', 14.99, 'Good', 'B-08', 'Available', NULL),
+(5, 2, 1, 'MC-002-002', 'BC1002002', '2019-06-20', 14.99, 'Fair', 'B-08', 'Checked Out', NULL),
+(6, 3, 1, 'MC-003-001', 'BC1003001', '2020-03-05', 13.99, 'Excellent', 'C-15', 'Available', NULL),
+(7, 4, 1, 'MC-004-001', 'BC1004001', '2019-11-10', 11.99, 'Good', 'D-20', 'Available', NULL),
+(8, 5, 1, 'MC-005-001', 'BC1005001', '2020-05-18', 16.99, 'Good', 'E-10', 'Checked Out', NULL),
+(9, 6, 1, 'MC-006-001', 'BC1006001', '2021-01-22', 17.99, 'Excellent', 'F-03', 'Available', NULL),
+(10, 7, 1, 'MC-007-001', 'BC1007001', '2021-06-15', 22.99, 'Excellent', 'G-18', 'Available', NULL),
+(11, 8, 1, 'MC-008-001', 'BC1008001', '2020-07-01', 18.99, 'Good', 'A-14', 'Available', NULL);
+
+-- Insert Members
+INSERT INTO members (member_id, membership_number, first_name, last_name, date_of_birth,
+                    gender, email, phone, mobile, address_line1, city, state, postal_code,
+                    membership_type_id, preferred_branch_id, registration_date,
+                    membership_expiry_date, status) VALUES
+(1, 'MEM-2023-001', 'Alice', 'Johnson', '1990-05-15', 'Female', 'alice.johnson@email.com',
+ '+1-555-2001', '+1-555-3001', '123 Oak Street', 'Springfield', 'IL', '62701',
+ 1, 1, '2023-01-10', '2025-01-10', 'Active'),
+(2, 'MEM-2023-002', 'Bob', 'Smith', '1985-08-22', 'Male', 'bob.smith@email.com',
+ '+1-555-2002', '+1-555-3002', '456 Maple Avenue', 'Springfield', 'IL', '62702',
+ 3, 1, '2023-03-15', '2025-03-15', 'Active'),
+(3, 'MEM-2024-003', 'Carol', 'Williams', '1995-12-03', 'Female', 'carol.w@email.com',
+ '+1-555-2003', '+1-555-3003', '789 Pine Road', 'Springfield', 'IL', '62703',
+ 2, 2, '2024-01-20', '2025-01-20', 'Active'),
+(4, 'MEM-2024-004', 'David', 'Brown', '2005-03-18', 'Male', 'david.brown@email.com',
+ '+1-555-2004', '+1-555-3004', '321 Elm Street', 'Springfield', 'IL', '62701',
+ 2, 1, '2024-06-10', '2025-06-10', 'Active'),
+(5, 'MEM-2024-005', 'Emma', 'Davis', '1992-07-25', 'Female', 'emma.d@email.com',
+ '+1-555-2005', '+1-555-3005', '654 Birch Lane', 'Springfield', 'IL', '62702',
+ 1, 3, '2024-08-05', '2025-08-05', 'Active');
+
+-- Insert Active Loans
+INSERT INTO loans (loan_id, member_id, copy_id, branch_id, checkout_date,
+                  due_date, status, checked_out_by) VALUES
+(1, 1, 5, 1, '2024-11-01 10:30:00', '2024-11-15', 'Active', 'Librarian Smith'),
+(2, 2, 8, 1, '2024-11-05 14:20:00', '2024-11-26', 'Active', 'Librarian Jones'),
+(3, 3, 2, 2, '2024-10-20 09:15:00', '2024-11-10', 'Overdue', 'Librarian Davis');
+
+-- Update member book counts
+UPDATE members SET books_currently_borrowed = 1 WHERE member_id IN (1, 2, 3);
+
+-- Insert Reservations
+INSERT INTO reservations (reservation_id, member_id, book_id, branch_id,
+                         reservation_date, expiry_date, status, priority_number) VALUES
+(1, 4, 2, 1, '2024-11-10 15:30:00', '2024-11-17', 'Active', 1),
+(2, 5, 5, 1, '2024-11-12 11:00:00', '2024-11-19', 'Active', 1);
+
+-- Insert Sample Fines
+INSERT INTO fines (fine_id, loan_id, member_id, fine_amount, fine_date,
+                  reason, days_overdue, payment_status) VALUES
+(1, 3, 3, 3.00, '2024-11-11', 'Overdue return', 6, 'Unpaid');
+
+-- Update member fines
+UPDATE members SET total_fines_owed = 3.00 WHERE member_id = 3;
+
+-- ============================================
+-- REPORTING QUERIES
+-- ============================================
+
+-- Query 1: Book Catalog with Availability
+SELECT 
+    b.isbn,
+    b.title,
+    GROUP_CONCAT(DISTINCT CONCAT(a.first_name, ' ', a.last_name) 
+        ORDER BY ba.sequence_number SEPARATOR ', ') AS authors,
+    c.category_name,
+    b.publisher,
+    b.publication_year,
+    COUNT(DISTINCT bc.copy_id) AS total_copies,
+    SUM(CASE WHEN bc.status = 'Available' THEN 1 ELSE 0 END) AS available,
+    SUM(CASE WHEN bc.status = 'Checked Out' THEN 1 ELSE 0 END) AS checked_out,
+    COUNT(DISTINCT r.reservation_id) AS active_reservations
+FROM books b
+LEFT JOIN book_authors ba ON b.book_id = ba.book_id
+LEFT JOIN authors a ON ba.author_id = a.author_id
+LEFT JOIN categories c ON b.category_id = c.category_id
+LEFT JOIN book_copies bc ON b.book_id = bc.book_id
+LEFT JOIN reservations r ON b.book_id = r.book_id AND r.status = 'Active'
+WHERE b.is_active = TRUE
+GROUP BY b.book_id, b.isbn, b.title, c.category_name, b.publisher, b.publication_year
+ORDER BY b.title;
+
+-- Query 2: Member Loan History
+SELECT 
+    m.membership_number,
+    CONCAT(m.first_name, ' ', m.last_name) AS member_name,
+    b.title AS book_title,
+    l.checkout_date,
+    l.due_date,
+    l.return_date,
+    DATEDIFF(COALESCE(l.return_date, CURRENT_DATE), l.checkout_date) AS days_borrowed,
+    l.status,
+    CASE 
+        WHEN l.return_date IS NULL AND l.due_date < CURRENT_DATE 
+        THEN DATEDIFF(CURRENT_DATE, l.due_date)
+        WHEN l.return_date > l.due_date 
+        THEN DATEDIFF(l.return_date, l.due_date)
+        ELSE 0 
+    END AS days_overdue
+FROM loans l
+JOIN members m ON l.member_id = m.member_id
+JOIN book_copies bc ON l.copy_id = bc.copy_id
+JOIN books b ON bc.book_id = b.book_id
+WHERE m.member_id = 1  -- Replace with specific member
+ORDER BY l.checkout_date DESC;
+
+-- ============================================
+-- PROCEDURE USAGE EXAMPLES
+-- ============================================
+
+-- Example 1: Checkout a book
+CALL checkout_book(1, 4, 1, 'Librarian Smith', @loan_id, @result);
+SELECT @loan_id, @result;
+
+-- Example 2: Return a book
+CALL return_book(1, 'Librarian Jones', @fine, @result);
+SELECT @fine, @result;
+
+-- Example 3: Reserve a book
+CALL reserve_book(4, 5, 1, @reservation_id, @result);
+SELECT @reservation_id, @result;
+
+-- Example 4: Renew a loan
+CALL renew_loan(2, @new_due, @result);
+SELECT @new_due, @result;
+
+-- Example 5: Calculate overdue fines
+CALL calculate_overdue_fines();
