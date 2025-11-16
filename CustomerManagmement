@@ -1,0 +1,1084 @@
+-- ============================================
+-- CRM DATABASE SYSTEM
+-- Customer Relationship Management with Orders & Payments
+-- ============================================
+
+-- Drop existing tables if they exist (in reverse order of dependencies)
+DROP TABLE IF EXISTS order_audit_log CASCADE;
+DROP TABLE IF EXISTS payment_transactions CASCADE;
+DROP TABLE IF EXISTS order_items CASCADE;
+DROP TABLE IF EXISTS orders CASCADE;
+DROP TABLE IF EXISTS products CASCADE;
+DROP TABLE IF EXISTS customer_interactions CASCADE;
+DROP TABLE IF EXISTS customers CASCADE;
+DROP TABLE IF EXISTS customer_segments CASCADE;
+DROP TABLE IF EXISTS sales_representatives CASCADE;
+
+-- ============================================
+-- TABLE CREATION (NORMALIZED STRUCTURE)
+-- ============================================
+
+-- Customer Segments Table (for marketing/analysis)
+CREATE TABLE customer_segments (
+    segment_id INT PRIMARY KEY,
+    segment_name VARCHAR(50) UNIQUE NOT NULL,
+    description TEXT,
+    discount_percentage DECIMAL(5,2) DEFAULT 0.00,
+    CHECK (discount_percentage >= 0 AND discount_percentage <= 100)
+);
+
+-- Sales Representatives Table
+CREATE TABLE sales_representatives (
+    rep_id INT PRIMARY KEY,
+    first_name VARCHAR(50) NOT NULL,
+    last_name VARCHAR(50) NOT NULL,
+    email VARCHAR(100) UNIQUE NOT NULL,
+    phone VARCHAR(20),
+    territory VARCHAR(100),
+    commission_rate DECIMAL(5,2) DEFAULT 5.00,
+    is_active BOOLEAN DEFAULT TRUE,
+    hire_date DATE DEFAULT CURRENT_DATE,
+    CHECK (email LIKE '%@%'),
+    CHECK (commission_rate >= 0 AND commission_rate <= 100)
+);
+
+-- Customers Table (Normalized)
+CREATE TABLE customers (
+    customer_id INT PRIMARY KEY,
+    customer_code VARCHAR(20) UNIQUE NOT NULL,
+    first_name VARCHAR(50) NOT NULL,
+    last_name VARCHAR(50) NOT NULL,
+    email VARCHAR(100) UNIQUE NOT NULL,
+    phone VARCHAR(20),
+    company_name VARCHAR(100),
+    
+    -- Address (Normalized within table)
+    address_line1 VARCHAR(200),
+    address_line2 VARCHAR(200),
+    city VARCHAR(100),
+    state_province VARCHAR(100),
+    postal_code VARCHAR(20),
+    country VARCHAR(50) DEFAULT 'USA',
+    
+    -- Customer Details
+    segment_id INT,
+    assigned_rep_id INT,
+    customer_since DATE DEFAULT CURRENT_DATE,
+    credit_limit DECIMAL(12,2) DEFAULT 5000.00,
+    current_balance DECIMAL(12,2) DEFAULT 0.00,
+    lifetime_value DECIMAL(12,2) DEFAULT 0.00,
+    
+    -- Status & Preferences
+    status VARCHAR(20) DEFAULT 'Active',
+    preferred_contact VARCHAR(20) DEFAULT 'Email',
+    newsletter_subscribed BOOLEAN DEFAULT TRUE,
+    
+    -- Timestamps
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_order_date DATE,
+    
+    CHECK (email LIKE '%@%'),
+    CHECK (status IN ('Active', 'Inactive', 'Suspended', 'VIP')),
+    CHECK (preferred_contact IN ('Email', 'Phone', 'SMS', 'Mail')),
+    CHECK (credit_limit >= 0),
+    CHECK (current_balance >= 0),
+    
+    CONSTRAINT fk_customer_segment 
+        FOREIGN KEY (segment_id) 
+        REFERENCES customer_segments(segment_id) 
+        ON DELETE SET NULL,
+    CONSTRAINT fk_customer_rep 
+        FOREIGN KEY (assigned_rep_id) 
+        REFERENCES sales_representatives(rep_id) 
+        ON DELETE SET NULL
+);
+
+-- Products Table (for order items)
+CREATE TABLE products (
+    product_id INT PRIMARY KEY,
+    product_code VARCHAR(20) UNIQUE NOT NULL,
+    product_name VARCHAR(150) NOT NULL,
+    description TEXT,
+    category VARCHAR(50),
+    unit_price DECIMAL(10,2) NOT NULL,
+    cost_price DECIMAL(10,2) NOT NULL,
+    stock_quantity INT DEFAULT 0,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CHECK (unit_price >= 0),
+    CHECK (cost_price >= 0),
+    CHECK (stock_quantity >= 0)
+);
+
+-- Orders Table (Normalized)
+CREATE TABLE orders (
+    order_id INT PRIMARY KEY,
+    order_number VARCHAR(20) UNIQUE NOT NULL,
+    customer_id INT NOT NULL,
+    
+    -- Order Details
+    order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    required_date DATE,
+    shipped_date DATE,
+    delivery_date DATE,
+    
+    -- Financial Details
+    subtotal DECIMAL(12,2) DEFAULT 0.00,
+    tax_amount DECIMAL(10,2) DEFAULT 0.00,
+    shipping_cost DECIMAL(10,2) DEFAULT 0.00,
+    discount_amount DECIMAL(10,2) DEFAULT 0.00,
+    total_amount DECIMAL(12,2) DEFAULT 0.00,
+    
+    -- Status & Assignment
+    status VARCHAR(20) DEFAULT 'Pending',
+    payment_status VARCHAR(20) DEFAULT 'Unpaid',
+    shipping_method VARCHAR(50),
+    tracking_number VARCHAR(100),
+    assigned_rep_id INT,
+    
+    -- Shipping Address (can differ from customer address)
+    ship_to_name VARCHAR(100),
+    ship_address_line1 VARCHAR(200),
+    ship_address_line2 VARCHAR(200),
+    ship_city VARCHAR(100),
+    ship_state VARCHAR(100),
+    ship_postal_code VARCHAR(20),
+    ship_country VARCHAR(50),
+    
+    -- Notes
+    notes TEXT,
+    
+    CHECK (status IN ('Pending', 'Processing', 'Shipped', 'Delivered', 'Cancelled', 'Returned')),
+    CHECK (payment_status IN ('Unpaid', 'Partially Paid', 'Paid', 'Refunded')),
+    CHECK (subtotal >= 0),
+    CHECK (total_amount >= 0),
+    
+    CONSTRAINT fk_order_customer 
+        FOREIGN KEY (customer_id) 
+        REFERENCES customers(customer_id) 
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_order_rep 
+        FOREIGN KEY (assigned_rep_id) 
+        REFERENCES sales_representatives(rep_id) 
+        ON DELETE SET NULL
+);
+
+-- Order Items Table (Normalized - eliminates repeating groups)
+CREATE TABLE order_items (
+    order_item_id INT PRIMARY KEY,
+    order_id INT NOT NULL,
+    product_id INT NOT NULL,
+    quantity INT NOT NULL,
+    unit_price DECIMAL(10,2) NOT NULL,
+    discount_percent DECIMAL(5,2) DEFAULT 0.00,
+    line_total DECIMAL(12,2) NOT NULL,
+    
+    CHECK (quantity > 0),
+    CHECK (unit_price >= 0),
+    CHECK (discount_percent >= 0 AND discount_percent <= 100),
+    CHECK (line_total >= 0),
+    
+    CONSTRAINT fk_order_item_order 
+        FOREIGN KEY (order_id) 
+        REFERENCES orders(order_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT fk_order_item_product 
+        FOREIGN KEY (product_id) 
+        REFERENCES products(product_id) 
+        ON DELETE RESTRICT
+);
+
+-- Payment Transactions Table (Normalized)
+CREATE TABLE payment_transactions (
+    payment_id INT PRIMARY KEY,
+    payment_number VARCHAR(20) UNIQUE NOT NULL,
+    order_id INT NOT NULL,
+    customer_id INT NOT NULL,
+    
+    -- Payment Details
+    payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    payment_method VARCHAR(30) NOT NULL,
+    payment_amount DECIMAL(12,2) NOT NULL,
+    
+    -- Transaction Details
+    transaction_id VARCHAR(100),
+    card_last_four VARCHAR(4),
+    payment_processor VARCHAR(50),
+    
+    -- Status
+    status VARCHAR(20) DEFAULT 'Completed',
+    currency VARCHAR(3) DEFAULT 'USD',
+    
+    -- Notes
+    notes TEXT,
+    processed_by INT,
+    
+    CHECK (payment_method IN ('Credit Card', 'Debit Card', 'PayPal', 'Bank Transfer', 
+                               'Cash', 'Check', 'Wire Transfer', 'Crypto')),
+    CHECK (status IN ('Pending', 'Completed', 'Failed', 'Refunded', 'Cancelled')),
+    CHECK (payment_amount > 0),
+    
+    CONSTRAINT fk_payment_order 
+        FOREIGN KEY (order_id) 
+        REFERENCES orders(order_id) 
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_payment_customer 
+        FOREIGN KEY (customer_id) 
+        REFERENCES customers(customer_id) 
+        ON DELETE RESTRICT,
+    CONSTRAINT fk_payment_processor 
+        FOREIGN KEY (processed_by) 
+        REFERENCES sales_representatives(rep_id) 
+        ON DELETE SET NULL
+);
+
+-- Customer Interactions Table (CRM activity tracking)
+CREATE TABLE customer_interactions (
+    interaction_id INT PRIMARY KEY,
+    customer_id INT NOT NULL,
+    interaction_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    interaction_type VARCHAR(30) NOT NULL,
+    subject VARCHAR(200),
+    notes TEXT,
+    rep_id INT,
+    follow_up_required BOOLEAN DEFAULT FALSE,
+    follow_up_date DATE,
+    
+    CHECK (interaction_type IN ('Call', 'Email', 'Meeting', 'Support Ticket', 
+                                'Sales Call', 'Complaint', 'Feedback')),
+    
+    CONSTRAINT fk_interaction_customer 
+        FOREIGN KEY (customer_id) 
+        REFERENCES customers(customer_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT fk_interaction_rep 
+        FOREIGN KEY (rep_id) 
+        REFERENCES sales_representatives(rep_id) 
+        ON DELETE SET NULL
+);
+
+-- Order Audit Log Table
+CREATE TABLE order_audit_log (
+    audit_id INT PRIMARY KEY AUTO_INCREMENT,
+    order_id INT NOT NULL,
+    order_number VARCHAR(20),
+    customer_id INT,
+    action_type VARCHAR(20) NOT NULL,
+    old_status VARCHAR(20),
+    new_status VARCHAR(20),
+    old_total DECIMAL(12,2),
+    new_total DECIMAL(12,2),
+    action_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    performed_by VARCHAR(100) DEFAULT 'SYSTEM',
+    ip_address VARCHAR(45),
+    notes TEXT,
+    
+    CHECK (action_type IN ('INSERT', 'UPDATE', 'DELETE', 'STATUS_CHANGE', 'PAYMENT_RECEIVED'))
+);
+
+-- ============================================
+-- INDEXES FOR PERFORMANCE OPTIMIZATION
+-- ============================================
+
+-- Customer Indexes
+CREATE INDEX idx_customers_email ON customers(email);
+CREATE INDEX idx_customers_segment ON customers(segment_id);
+CREATE INDEX idx_customers_rep ON customers(assigned_rep_id);
+CREATE INDEX idx_customers_status ON customers(status);
+CREATE INDEX idx_customers_last_order ON customers(last_order_date);
+CREATE INDEX idx_customers_lifetime_value ON customers(lifetime_value DESC);
+
+-- Order Indexes
+CREATE INDEX idx_orders_customer ON orders(customer_id);
+CREATE INDEX idx_orders_date ON orders(order_date);
+CREATE INDEX idx_orders_status ON orders(status);
+CREATE INDEX idx_orders_payment_status ON orders(payment_status);
+CREATE INDEX idx_orders_rep ON orders(assigned_rep_id);
+CREATE INDEX idx_orders_customer_date ON orders(customer_id, order_date DESC);
+CREATE INDEX idx_orders_total ON orders(total_amount);
+
+-- Order Items Indexes
+CREATE INDEX idx_order_items_order ON order_items(order_id);
+CREATE INDEX idx_order_items_product ON order_items(product_id);
+
+-- Payment Indexes
+CREATE INDEX idx_payments_order ON payment_transactions(order_id);
+CREATE INDEX idx_payments_customer ON payment_transactions(customer_id);
+CREATE INDEX idx_payments_date ON payment_transactions(payment_date);
+CREATE INDEX idx_payments_status ON payment_transactions(status);
+CREATE INDEX idx_payments_method ON payment_transactions(payment_method);
+
+-- Audit Log Index
+CREATE INDEX idx_audit_order ON order_audit_log(order_id);
+CREATE INDEX idx_audit_date ON order_audit_log(action_date);
+CREATE INDEX idx_audit_customer ON order_audit_log(customer_id);
+
+-- ============================================
+-- STORED PROCEDURES & FUNCTIONS
+-- ============================================
+
+-- Function 1: Generate Monthly Sales Report
+DELIMITER //
+CREATE FUNCTION generate_monthly_sales_report(
+    p_year INT,
+    p_month INT
+)
+RETURNS TEXT
+DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE v_report TEXT;
+    DECLARE v_total_revenue DECIMAL(12,2);
+    DECLARE v_total_orders INT;
+    DECLARE v_avg_order_value DECIMAL(10,2);
+    DECLARE v_new_customers INT;
+    DECLARE v_start_date DATE;
+    DECLARE v_end_date DATE;
+    
+    SET v_start_date = DATE(CONCAT(p_year, '-', LPAD(p_month, 2, '0'), '-01'));
+    SET v_end_date = LAST_DAY(v_start_date);
+    
+    -- Calculate metrics
+    SELECT 
+        COALESCE(SUM(total_amount), 0),
+        COUNT(*),
+        COALESCE(AVG(total_amount), 0)
+    INTO v_total_revenue, v_total_orders, v_avg_order_value
+    FROM orders
+    WHERE DATE(order_date) BETWEEN v_start_date AND v_end_date
+      AND status NOT IN ('Cancelled');
+    
+    SELECT COUNT(*) INTO v_new_customers
+    FROM customers
+    WHERE DATE(customer_since) BETWEEN v_start_date AND v_end_date;
+    
+    SET v_report = CONCAT(
+        '=== MONTHLY SALES REPORT ===\n',
+        'Period: ', DATE_FORMAT(v_start_date, '%M %Y'), '\n',
+        '----------------------------\n',
+        'Total Revenue: $', FORMAT(v_total_revenue, 2), '\n',
+        'Total Orders: ', v_total_orders, '\n',
+        'Average Order Value: $', FORMAT(v_avg_order_value, 2), '\n',
+        'New Customers: ', v_new_customers, '\n',
+        '============================\n'
+    );
+    
+    RETURN v_report;
+END //
+DELIMITER ;
+
+-- Procedure 1: Get Detailed Monthly Sales Report with Breakdown
+DELIMITER //
+CREATE PROCEDURE get_monthly_sales_detailed(
+    IN p_year INT,
+    IN p_month INT
+)
+BEGIN
+    DECLARE v_start_date DATE;
+    DECLARE v_end_date DATE;
+    
+    SET v_start_date = DATE(CONCAT(p_year, '-', LPAD(p_month, 2, '0'), '-01'));
+    SET v_end_date = LAST_DAY(v_start_date);
+    
+    -- Summary Metrics
+    SELECT 
+        DATE_FORMAT(v_start_date, '%M %Y') AS report_period,
+        COUNT(DISTINCT o.order_id) AS total_orders,
+        COUNT(DISTINCT o.customer_id) AS unique_customers,
+        SUM(o.total_amount) AS total_revenue,
+        AVG(o.total_amount) AS avg_order_value,
+        SUM(o.total_amount - o.discount_amount) AS net_revenue,
+        SUM(o.discount_amount) AS total_discounts,
+        COUNT(DISTINCT CASE WHEN c.customer_since >= v_start_date THEN c.customer_id END) AS new_customers
+    FROM orders o
+    JOIN customers c ON o.customer_id = c.customer_id
+    WHERE DATE(o.order_date) BETWEEN v_start_date AND v_end_date
+      AND o.status NOT IN ('Cancelled');
+    
+    -- Sales by Status
+    SELECT 
+        o.status,
+        COUNT(*) AS order_count,
+        SUM(o.total_amount) AS revenue
+    FROM orders o
+    WHERE DATE(o.order_date) BETWEEN v_start_date AND v_end_date
+    GROUP BY o.status
+    ORDER BY revenue DESC;
+    
+    -- Top 10 Customers
+    SELECT 
+        c.customer_code,
+        CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
+        c.company_name,
+        COUNT(o.order_id) AS orders_count,
+        SUM(o.total_amount) AS total_spent
+    FROM customers c
+    JOIN orders o ON c.customer_id = o.customer_id
+    WHERE DATE(o.order_date) BETWEEN v_start_date AND v_end_date
+      AND o.status NOT IN ('Cancelled')
+    GROUP BY c.customer_id, c.customer_code, c.first_name, c.last_name, c.company_name
+    ORDER BY total_spent DESC
+    LIMIT 10;
+    
+    -- Top 10 Products
+    SELECT 
+        p.product_code,
+        p.product_name,
+        SUM(oi.quantity) AS units_sold,
+        SUM(oi.line_total) AS revenue,
+        COUNT(DISTINCT oi.order_id) AS orders_count
+    FROM order_items oi
+    JOIN products p ON oi.product_id = p.product_id
+    JOIN orders o ON oi.order_id = o.order_id
+    WHERE DATE(o.order_date) BETWEEN v_start_date AND v_end_date
+      AND o.status NOT IN ('Cancelled')
+    GROUP BY p.product_id, p.product_code, p.product_name
+    ORDER BY revenue DESC
+    LIMIT 10;
+    
+    -- Daily Sales Trend
+    SELECT 
+        DATE(o.order_date) AS sale_date,
+        COUNT(*) AS orders,
+        SUM(o.total_amount) AS revenue
+    FROM orders o
+    WHERE DATE(o.order_date) BETWEEN v_start_date AND v_end_date
+      AND o.status NOT IN ('Cancelled')
+    GROUP BY DATE(o.order_date)
+    ORDER BY sale_date;
+END //
+DELIMITER ;
+
+-- Procedure 2: Create New Order with Items
+DELIMITER //
+CREATE PROCEDURE create_order(
+    IN p_customer_id INT,
+    IN p_shipping_method VARCHAR(50),
+    IN p_rep_id INT,
+    OUT p_order_id INT,
+    OUT p_result VARCHAR(200)
+)
+BEGIN
+    DECLARE v_order_number VARCHAR(20);
+    DECLARE v_customer_exists INT;
+    
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SET p_result = 'Error: Order creation failed';
+        SET p_order_id = NULL;
+    END;
+    
+    START TRANSACTION;
+    
+    -- Validate customer exists
+    SELECT COUNT(*) INTO v_customer_exists
+    FROM customers
+    WHERE customer_id = p_customer_id AND status = 'Active';
+    
+    IF v_customer_exists = 0 THEN
+        SET p_result = 'Error: Customer not found or inactive';
+        SET p_order_id = NULL;
+        ROLLBACK;
+    ELSE
+        -- Generate order number
+        SET v_order_number = CONCAT('ORD-', DATE_FORMAT(NOW(), '%Y%m%d'), '-', 
+                                    LPAD(FLOOR(RAND() * 10000), 4, '0'));
+        
+        -- Get next order ID
+        SELECT COALESCE(MAX(order_id), 0) + 1 INTO p_order_id FROM orders;
+        
+        -- Insert order
+        INSERT INTO orders (
+            order_id, order_number, customer_id, shipping_method, 
+            assigned_rep_id, status, payment_status
+        ) VALUES (
+            p_order_id, v_order_number, p_customer_id, p_shipping_method,
+            p_rep_id, 'Pending', 'Unpaid'
+        );
+        
+        COMMIT;
+        SET p_result = CONCAT('Success: Order created with ID ', p_order_id);
+    END IF;
+END //
+DELIMITER ;
+
+-- Procedure 3: Process Payment
+DELIMITER //
+CREATE PROCEDURE process_payment(
+    IN p_order_id INT,
+    IN p_payment_method VARCHAR(30),
+    IN p_payment_amount DECIMAL(12,2),
+    IN p_transaction_id VARCHAR(100),
+    IN p_processed_by INT,
+    OUT p_result VARCHAR(200)
+)
+BEGIN
+    DECLARE v_order_total DECIMAL(12,2);
+    DECLARE v_payment_id INT;
+    DECLARE v_payment_number VARCHAR(20);
+    DECLARE v_customer_id INT;
+    DECLARE v_total_paid DECIMAL(12,2);
+    DECLARE v_new_payment_status VARCHAR(20);
+    
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SET p_result = 'Error: Payment processing failed';
+    END;
+    
+    START TRANSACTION;
+    
+    -- Get order details
+    SELECT total_amount, customer_id INTO v_order_total, v_customer_id
+    FROM orders WHERE order_id = p_order_id;
+    
+    -- Calculate total paid including this payment
+    SELECT COALESCE(SUM(payment_amount), 0) + p_payment_amount 
+    INTO v_total_paid
+    FROM payment_transactions
+    WHERE order_id = p_order_id AND status = 'Completed';
+    
+    -- Determine payment status
+    IF v_total_paid >= v_order_total THEN
+        SET v_new_payment_status = 'Paid';
+    ELSEIF v_total_paid > 0 THEN
+        SET v_new_payment_status = 'Partially Paid';
+    ELSE
+        SET v_new_payment_status = 'Unpaid';
+    END IF;
+    
+    -- Generate payment number
+    SET v_payment_number = CONCAT('PAY-', DATE_FORMAT(NOW(), '%Y%m%d'), '-', 
+                                  LPAD(FLOOR(RAND() * 10000), 4, '0'));
+    
+    -- Get next payment ID
+    SELECT COALESCE(MAX(payment_id), 0) + 1 INTO v_payment_id 
+    FROM payment_transactions;
+    
+    -- Insert payment
+    INSERT INTO payment_transactions (
+        payment_id, payment_number, order_id, customer_id,
+        payment_method, payment_amount, transaction_id,
+        status, processed_by
+    ) VALUES (
+        v_payment_id, v_payment_number, p_order_id, v_customer_id,
+        p_payment_method, p_payment_amount, p_transaction_id,
+        'Completed', p_processed_by
+    );
+    
+    -- Update order payment status
+    UPDATE orders
+    SET payment_status = v_new_payment_status
+    WHERE order_id = p_order_id;
+    
+    COMMIT;
+    SET p_result = CONCAT('Success: Payment of $', p_payment_amount, ' processed. Status: ', v_new_payment_status);
+END //
+DELIMITER ;
+
+-- ============================================
+-- TRIGGERS
+-- ============================================
+
+-- Trigger 1: Log new orders in audit table
+DELIMITER //
+CREATE TRIGGER after_order_insert
+AFTER INSERT ON orders
+FOR EACH ROW
+BEGIN
+    INSERT INTO order_audit_log (
+        order_id, order_number, customer_id, action_type,
+        new_status, new_total, performed_by
+    ) VALUES (
+        NEW.order_id, NEW.order_number, NEW.customer_id, 'INSERT',
+        NEW.status, NEW.total_amount, USER()
+    );
+END //
+DELIMITER ;
+
+-- Trigger 2: Log order updates
+DELIMITER //
+CREATE TRIGGER after_order_update
+AFTER UPDATE ON orders
+FOR EACH ROW
+BEGIN
+    INSERT INTO order_audit_log (
+        order_id, order_number, customer_id, action_type,
+        old_status, new_status, old_total, new_total, performed_by
+    ) VALUES (
+        NEW.order_id, NEW.order_number, NEW.customer_id, 'UPDATE',
+        OLD.status, NEW.status, OLD.total_amount, NEW.total_amount, USER()
+    );
+END //
+DELIMITER ;
+
+-- Trigger 3: Update customer last order date
+DELIMITER //
+CREATE TRIGGER after_order_insert_update_customer
+AFTER INSERT ON orders
+FOR EACH ROW
+BEGIN
+    UPDATE customers
+    SET last_order_date = DATE(NEW.order_date),
+        last_updated = CURRENT_TIMESTAMP
+    WHERE customer_id = NEW.customer_id;
+END //
+DELIMITER ;
+
+-- Trigger 4: Update customer lifetime value on payment
+DELIMITER //
+CREATE TRIGGER after_payment_insert
+AFTER INSERT ON payment_transactions
+FOR EACH ROW
+BEGIN
+    IF NEW.status = 'Completed' THEN
+        UPDATE customers
+        SET lifetime_value = lifetime_value + NEW.payment_amount,
+            last_updated = CURRENT_TIMESTAMP
+        WHERE customer_id = NEW.customer_id;
+        
+        -- Log payment in audit
+        INSERT INTO order_audit_log (
+            order_id, customer_id, action_type, new_total, performed_by
+        ) VALUES (
+            NEW.order_id, NEW.customer_id, 'PAYMENT_RECEIVED', 
+            NEW.payment_amount, USER()
+        );
+    END IF;
+END //
+DELIMITER ;
+
+-- Trigger 5: Auto-calculate order totals from items
+DELIMITER //
+CREATE TRIGGER after_order_item_insert
+AFTER INSERT ON order_items
+FOR EACH ROW
+BEGIN
+    UPDATE orders
+    SET subtotal = (
+        SELECT SUM(line_total) FROM order_items WHERE order_id = NEW.order_id
+    ),
+    total_amount = (
+        SELECT SUM(line_total) FROM order_items WHERE order_id = NEW.order_id
+    ) + COALESCE(tax_amount, 0) + COALESCE(shipping_cost, 0) - COALESCE(discount_amount, 0)
+    WHERE order_id = NEW.order_id;
+END //
+DELIMITER ;
+
+-- ============================================
+-- SAMPLE DATA
+-- ============================================
+
+-- Insert Customer Segments
+INSERT INTO customer_segments VALUES
+(1, 'Retail', 'Individual retail customers', 0.00),
+(2, 'Wholesale', 'Wholesale buyers', 10.00),
+(3, 'VIP', 'High-value customers', 15.00),
+(4, 'Corporate', 'Corporate accounts', 12.00);
+
+-- Insert Sales Representatives
+INSERT INTO sales_representatives VALUES
+(1, 'John', 'Anderson', 'j.anderson@company.com', '+1-555-2001', 'Northeast', 7.5, TRUE, '2022-01-15'),
+(2, 'Sarah', 'Mitchell', 's.mitchell@company.com', '+1-555-2002', 'Southeast', 8.0, TRUE, '2021-06-20'),
+(3, 'Michael', 'Thompson', 'm.thompson@company.com', '+1-555-2003', 'West Coast', 7.0, TRUE, '2023-03-10');
+
+-- Insert Customers
+INSERT INTO customers (customer_id, customer_code, first_name, last_name, email, phone, 
+                       company_name, address_line1, city, state_province, postal_code, 
+                       segment_id, assigned_rep_id, status) VALUES
+(1001, 'CUST-1001', 'Emma', 'Johnson', 'emma.j@email.com', '+1-555-3001', 
+ NULL, '123 Main St', 'Boston', 'MA', '02101', 1, 1, 'Active'),
+(1002, 'CUST-1002', 'James', 'Williams', 'james.w@business.com', '+1-555-3002',
+ 'Tech Solutions Inc', '456 Business Ave', 'New York', 'NY', '10001', 4, 1, 'VIP'),
+(1003, 'CUST-1003', 'Olivia', 'Brown', 'olivia.b@email.com', '+1-555-3003',
+ NULL, '789 Oak Dr', 'Miami', 'FL', '33101', 1, 2, 'Active'),
+(1004, 'CUST-1004', 'William', 'Davis', 'william.d@wholesale.com', '+1-555-3004',
+ 'Wholesale Distributors LLC', '321 Commerce Rd', 'Atlanta', 'GA', '30301', 2, 2, 'Active');
+
+-- Insert Products
+INSERT INTO products VALUES
+(2001, 'PROD-001', 'Wireless Headphones', 'Premium noise-cancelling headphones', 'Electronics', 149.99, 75.00, 100, TRUE, CURRENT_TIMESTAMP),
+(2002, 'PROD-002', 'Smart Watch', 'Fitness tracking smartwatch', 'Electronics', 299.99, 150.00, 75, TRUE, CURRENT_TIMESTAMP),
+(2003, 'PROD-003', 'Laptop Bag', 'Professional leather laptop bag', 'Accessories', 79.99, 35.00, 150, TRUE, CURRENT_TIMESTAMP),
+(2004, 'PROD-004', 'USB-C Cable', 'High-speed charging cable', 'Accessories', 19.99, 5.00, 500, TRUE, CURRENT_TIMESTAMP),
+(2005, 'PROD-005', 'Portable Speaker', 'Waterproof Bluetooth speaker', 'Electronics', 89.99, 40.00, 200, TRUE, CURRENT_TIMESTAMP);
+
+-- Insert Orders
+INSERT INTO orders (order_id, order_number, customer_id, order_date, status, 
+                    payment_status, shipping_method, assigned_rep_id,
+                    subtotal, tax_amount, shipping_cost, total_amount) VALUES
+(5001, 'ORD-20241101-0001', 1001, '2024-11-01 10:30:00', 'Delivered', 'Paid', 'Express', 1, 229.98, 18.40, 15.00, 263.38),
+(5002, 'ORD-20241105-0002', 1002, '2024-11-05 14:20:00', 'Shipped', 'Paid', 'Standard', 1, 599.98, 48.00, 0.00, 647.98),
+(5003, 'ORD-20241110-0003', 1003, '2024-11-10 09:15:00', 'Processing', 'Partially Paid', 'Express', 2, 169.98, 13.60, 15.00, 198.58),
+(5004, 'ORD-20241115-0004', 1004, '2024-11-15 16:45:00', 'Pending', 'Unpaid', 'Freight', 2, 1999.80, 159.98, 50.00, 2209.78);
+
+-- Insert Order Items
+INSERT INTO order_items VALUES
+(1, 5001, 2001, 1, 149.99, 0.00, 149.99),
+(2, 5001, 2004, 4, 19.99, 0.00, 79.96),
+(3, 5002, 2002, 2, 299.99, 0.00, 599.98),
+(4, 5003, 2001, 1, 149.99, 0.00, 149.99),
+(5, 5003, 2004, 1, 19.99, 0.00, 19.99),
+(6, 5004, 2005, 10, 89.99, 10.00, 809.91),
+(7, 5004, 2003, 15, 79.99, 0.00, 1199.85);
+
+-- Insert Payment Transactions
+INSERT INTO payment_transactions (payment_id, payment_number, order_id, customer_id,
+                                  payment_date, payment_method, payment_amount,
+                                  transaction_id, status, processed_by) VALUES
+(1, 'PAY-20241101-0001', 5001, 1001, '2024-11-01 10:35:00', 'Credit Card', 263.38, 'TXN-CC-123456', 'Completed', 1),
+(2, 'PAY-20241105-0002', 5002, 1002, '2024-11-05 14:25:00', 'PayPal', 647.98, 'TXN-PP-789012', 'Completed', 1),
+(3, 'PAY-20241110-0003', 5003, 1003, '2024-11-10 10:00:00', 'Credit Card', 100.00, 'TXN-CC-345678', 'Completed', 2);
+
+-- Insert Customer Interactions
+INSERT INTO customer_interactions (interaction_id, customer_id, interaction_date, 
+                                   interaction_type, subject, notes, rep_id) VALUES
+(1, 1001, '2024-10-25 11:00:00', 'Sales Call', 'Product inquiry', 'Customer interested in wireless headphones', 1),
+(2, 1002, '2024-11-03 14:30:00', 'Meeting', 'Quarterly review', 'Discussed bulk order discount', 1),
+(3, 1003, '2024-11-08 09:45:00', 'Email', 'Order follow-up', 'Checking on order status', 2),
+(4, 1004, '2024-11-12 16:20:00', 'Call', 'New order placement', 'Placed large wholesale order', 2);
+
+-- ============================================
+-- OPTIMIZED QUERIES FOR ORDER HISTORY
+-- ============================================
+
+-- Query 1: Customer Order History (Optimized with indexes)
+SELECT 
+    o.order_number,
+    o.order_date,
+    o.status,
+    o.payment_status,
+    o.total_amount,
+    COUNT(oi.order_item_id) AS total_items,
+    SUM(oi.quantity) AS total_quantity,
+    GROUP_CONCAT(DISTINCT p.product_name SEPARATOR ', ') AS products
+FROM orders o
+LEFT JOIN order_items oi ON o.order_id = oi.order_id
+LEFT JOIN products p ON oi.product_id = p.product_id
+WHERE o.customer_id = 1001  -- Replace with parameter
+GROUP BY o.order_id, o.order_number, o.order_date, o.status, o.payment_status, o.total_amount
+ORDER BY o.order_date DESC
+LIMIT 20;
+
+-- Query 2: Order Details with Payment Info (Single optimized query)
+SELECT 
+    o.order_number,
+    o.order_date,
+    CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
+    c.email AS customer_email,
+    o.status AS order_status,
+    o.payment_status,
+    o.total_amount,
+    COALESCE(SUM(pt.payment_amount), 0) AS total_paid,
+    (o.total_amount - COALESCE(SUM(pt.payment_amount), 0)) AS balance_due,
+    GROUP_CONCAT(DISTINCT pt.payment_method SEPARATOR ', ') AS payment_methods
+FROM orders o
+JOIN customers c ON o.customer_id = c.customer_id
+LEFT JOIN payment_transactions pt ON o.order_id = pt.order_id AND pt.status = 'Completed'
+WHERE o.order_id = 5001  -- Replace with parameter
+GROUP BY o.order_id, o.order_number, o.order_date, c.first_name, c.last_name, 
+         c.email, o.status, o.payment_status, o.total_amount;
+
+-- Query 3: Recent Orders Dashboard (Last 30 days with metrics)
+SELECT 
+    DATE(o.order_date) AS order_date,
+    COUNT(DISTINCT o.order_id) AS orders_count,
+    COUNT(DISTINCT o.customer_id) AS unique_customers,
+    SUM(o.total_amount) AS daily_revenue,
+    AVG(o.total_amount) AS avg_order_value,
+    SUM(CASE WHEN o.status = 'Delivered' THEN 1 ELSE 0 END) AS delivered_orders,
+    SUM(CASE WHEN o.payment_status = 'Paid' THEN 1 ELSE 0 END) AS paid_orders
+FROM orders o
+WHERE o.order_date >= DATE_SUB(CURRENT_DATE, INTERVAL 30 DAY)
+GROUP BY DATE(o.order_date)
+ORDER BY order_date DESC;
+
+-- Query 4: Customer 360 View (Complete customer profile)
+SELECT 
+    c.customer_code,
+    CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
+    c.email,
+    c.phone,
+    c.company_name,
+    cs.segment_name,
+    c.status,
+    c.customer_since,
+    c.lifetime_value,
+    COUNT(DISTINCT o.order_id) AS total_orders,
+    COALESCE(SUM(o.total_amount), 0) AS total_spent,
+    COALESCE(AVG(o.total_amount), 0) AS avg_order_value,
+    MAX(o.order_date) AS last_order_date,
+    DATEDIFF(CURRENT_DATE, MAX(o.order_date)) AS days_since_last_order,
+    COUNT(DISTINCT ci.interaction_id) AS total_interactions,
+    CONCAT(sr.first_name, ' ', sr.last_name) AS assigned_rep
+FROM customers c
+LEFT JOIN customer_segments cs ON c.segment_id = cs.segment_id
+LEFT JOIN orders o ON c.customer_id = o.customer_id
+LEFT JOIN customer_interactions ci ON c.customer_id = ci.customer_id
+LEFT JOIN sales_representatives sr ON c.assigned_rep_id = sr.rep_id
+WHERE c.customer_id = 1001  -- Replace with parameter
+GROUP BY c.customer_id, c.customer_code, c.first_name, c.last_name, c.email, 
+         c.phone, c.company_name, cs.segment_name, c.status, c.customer_since, 
+         c.lifetime_value, sr.first_name, sr.last_name;
+
+-- Query 5: Top Customers by Revenue (Optimized with covering index)
+SELECT 
+    c.customer_code,
+    CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
+    c.company_name,
+    cs.segment_name,
+    c.lifetime_value,
+    COUNT(o.order_id) AS order_count,
+    SUM(o.total_amount) AS total_revenue,
+    AVG(o.total_amount) AS avg_order_value,
+    MAX(o.order_date) AS last_order_date,
+    CONCAT(sr.first_name, ' ', sr.last_name) AS sales_rep
+FROM customers c
+JOIN customer_segments cs ON c.segment_id = cs.segment_id
+LEFT JOIN orders o ON c.customer_id = o.customer_id AND o.status NOT IN ('Cancelled')
+LEFT JOIN sales_representatives sr ON c.assigned_rep_id = sr.rep_id
+WHERE c.status = 'Active'
+GROUP BY c.customer_id, c.customer_code, c.first_name, c.last_name, 
+         c.company_name, cs.segment_name, c.lifetime_value, sr.first_name, sr.last_name
+ORDER BY total_revenue DESC
+LIMIT 20;
+
+-- Query 6: Order Fulfillment Status Report
+SELECT 
+    o.status,
+    COUNT(*) AS order_count,
+    SUM(o.total_amount) AS total_value,
+    AVG(DATEDIFF(o.shipped_date, o.order_date)) AS avg_days_to_ship,
+    AVG(DATEDIFF(o.delivery_date, o.shipped_date)) AS avg_delivery_time,
+    COUNT(CASE WHEN o.payment_status = 'Paid' THEN 1 END) AS paid_count,
+    COUNT(CASE WHEN o.payment_status = 'Unpaid' THEN 1 END) AS unpaid_count
+FROM orders o
+WHERE o.order_date >= DATE_SUB(CURRENT_DATE, INTERVAL 90 DAY)
+GROUP BY o.status
+ORDER BY 
+    CASE o.status
+        WHEN 'Pending' THEN 1
+        WHEN 'Processing' THEN 2
+        WHEN 'Shipped' THEN 3
+        WHEN 'Delivered' THEN 4
+        WHEN 'Cancelled' THEN 5
+        WHEN 'Returned' THEN 6
+    END;
+
+-- Query 7: Payment Collection Report
+SELECT 
+    DATE(pt.payment_date) AS payment_date,
+    COUNT(*) AS payment_count,
+    pt.payment_method,
+    SUM(pt.payment_amount) AS total_collected,
+    AVG(pt.payment_amount) AS avg_payment,
+    COUNT(DISTINCT pt.customer_id) AS unique_customers
+FROM payment_transactions pt
+WHERE pt.payment_date >= DATE_SUB(CURRENT_DATE, INTERVAL 30 DAY)
+  AND pt.status = 'Completed'
+GROUP BY DATE(pt.payment_date), pt.payment_method
+ORDER BY payment_date DESC, total_collected DESC;
+
+-- Query 8: Sales Representative Performance
+SELECT 
+    sr.rep_id,
+    CONCAT(sr.first_name, ' ', sr.last_name) AS rep_name,
+    sr.territory,
+    COUNT(DISTINCT o.order_id) AS orders_handled,
+    COUNT(DISTINCT o.customer_id) AS customers_served,
+    SUM(o.total_amount) AS total_sales,
+    AVG(o.total_amount) AS avg_order_value,
+    SUM(o.total_amount) * sr.commission_rate / 100 AS commission_earned,
+    COUNT(DISTINCT ci.interaction_id) AS customer_interactions
+FROM sales_representatives sr
+LEFT JOIN orders o ON sr.rep_id = o.assigned_rep_id 
+    AND o.order_date >= DATE_SUB(CURRENT_DATE, INTERVAL 30 DAY)
+    AND o.status NOT IN ('Cancelled')
+LEFT JOIN customer_interactions ci ON sr.rep_id = ci.rep_id
+    AND ci.interaction_date >= DATE_SUB(CURRENT_DATE, INTERVAL 30 DAY)
+WHERE sr.is_active = TRUE
+GROUP BY sr.rep_id, sr.first_name, sr.last_name, sr.territory, sr.commission_rate
+ORDER BY total_sales DESC;
+
+-- Query 9: Product Performance Analysis
+SELECT 
+    p.product_code,
+    p.product_name,
+    p.category,
+    COUNT(DISTINCT oi.order_id) AS orders_count,
+    SUM(oi.quantity) AS units_sold,
+    SUM(oi.line_total) AS total_revenue,
+    AVG(oi.unit_price) AS avg_selling_price,
+    p.cost_price,
+    SUM(oi.line_total) - (SUM(oi.quantity) * p.cost_price) AS gross_profit,
+    ((SUM(oi.line_total) - (SUM(oi.quantity) * p.cost_price)) / SUM(oi.line_total)) * 100 AS profit_margin_pct,
+    p.stock_quantity AS current_stock
+FROM products p
+JOIN order_items oi ON p.product_id = oi.product_id
+JOIN orders o ON oi.order_id = o.order_id
+WHERE o.order_date >= DATE_SUB(CURRENT_DATE, INTERVAL 90 DAY)
+  AND o.status NOT IN ('Cancelled')
+GROUP BY p.product_id, p.product_code, p.product_name, p.category, 
+         p.cost_price, p.stock_quantity
+ORDER BY total_revenue DESC;
+
+-- Query 10: Customer Retention Analysis
+SELECT 
+    cohort_month,
+    customers_in_cohort,
+    returning_customers,
+    ROUND((returning_customers / customers_in_cohort) * 100, 2) AS retention_rate_pct
+FROM (
+    SELECT 
+        DATE_FORMAT(c.customer_since, '%Y-%m') AS cohort_month,
+        COUNT(DISTINCT c.customer_id) AS customers_in_cohort,
+        COUNT(DISTINCT CASE 
+            WHEN o.order_date > DATE_ADD(c.customer_since, INTERVAL 30 DAY) 
+            THEN c.customer_id 
+        END) AS returning_customers
+    FROM customers c
+    LEFT JOIN orders o ON c.customer_id = o.customer_id
+    WHERE c.customer_since >= DATE_SUB(CURRENT_DATE, INTERVAL 12 MONTH)
+    GROUP BY DATE_FORMAT(c.customer_since, '%Y-%m')
+) AS cohort_analysis
+ORDER BY cohort_month DESC;
+
+-- ============================================
+-- ADVANCED ANALYTICS VIEWS
+-- ============================================
+
+-- View 1: Customer Lifetime Value Summary
+CREATE OR REPLACE VIEW vw_customer_ltv AS
+SELECT 
+    c.customer_id,
+    c.customer_code,
+    CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
+    c.segment_id,
+    cs.segment_name,
+    c.customer_since,
+    DATEDIFF(CURRENT_DATE, c.customer_since) AS customer_age_days,
+    COUNT(DISTINCT o.order_id) AS total_orders,
+    SUM(o.total_amount) AS total_revenue,
+    AVG(o.total_amount) AS avg_order_value,
+    c.lifetime_value,
+    MAX(o.order_date) AS last_order_date,
+    DATEDIFF(CURRENT_DATE, MAX(o.order_date)) AS days_since_last_order,
+    CASE 
+        WHEN DATEDIFF(CURRENT_DATE, MAX(o.order_date)) <= 30 THEN 'Active'
+        WHEN DATEDIFF(CURRENT_DATE, MAX(o.order_date)) <= 90 THEN 'At Risk'
+        ELSE 'Inactive'
+    END AS customer_health_status
+FROM customers c
+LEFT JOIN customer_segments cs ON c.segment_id = cs.segment_id
+LEFT JOIN orders o ON c.customer_id = o.customer_id AND o.status NOT IN ('Cancelled')
+GROUP BY c.customer_id, c.customer_code, c.first_name, c.last_name, 
+         c.segment_id, cs.segment_name, c.customer_since, c.lifetime_value;
+
+-- View 2: Order Summary View
+CREATE OR REPLACE VIEW vw_order_summary AS
+SELECT 
+    o.order_id,
+    o.order_number,
+    o.order_date,
+    c.customer_id,
+    CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
+    c.email AS customer_email,
+    o.status,
+    o.payment_status,
+    o.total_amount,
+    COALESCE(SUM(pt.payment_amount), 0) AS amount_paid,
+    (o.total_amount - COALESCE(SUM(pt.payment_amount), 0)) AS balance_due,
+    COUNT(DISTINCT oi.product_id) AS unique_products,
+    SUM(oi.quantity) AS total_items,
+    CONCAT(sr.first_name, ' ', sr.last_name) AS sales_rep
+FROM orders o
+JOIN customers c ON o.customer_id = c.customer_id
+LEFT JOIN order_items oi ON o.order_id = oi.order_id
+LEFT JOIN payment_transactions pt ON o.order_id = pt.order_id AND pt.status = 'Completed'
+LEFT JOIN sales_representatives sr ON o.assigned_rep_id = sr.rep_id
+GROUP BY o.order_id, o.order_number, o.order_date, c.customer_id, 
+         c.first_name, c.last_name, c.email, o.status, o.payment_status, 
+         o.total_amount, sr.first_name, sr.last_name;
+
+-- ============================================
+-- PROCEDURE USAGE EXAMPLES
+-- ============================================
+
+-- Example 1: Generate monthly report using function
+SELECT generate_monthly_sales_report(2024, 11) AS monthly_report;
+
+-- Example 2: Get detailed monthly sales breakdown
+CALL get_monthly_sales_detailed(2024, 11);
+
+-- Example 3: Create a new order
+CALL create_order(1001, 'Express', 1, @new_order_id, @result);
+SELECT @new_order_id AS order_id, @result AS result_message;
+
+-- Example 4: Process a payment
+CALL process_payment(5004, 'Credit Card', 1000.00, 'TXN-CC-999888', 2, @payment_result);
+SELECT @payment_result AS payment_status;
+
+-- ============================================
+-- AUDIT LOG QUERIES
+-- ============================================
+
+-- View all audit logs for a specific order
+SELECT 
+    audit_id,
+    action_type,
+    old_status,
+    new_status,
+    old_total,
+    new_total,
+    action_date,
+    performed_by,
+    notes
+FROM order_audit_log
+WHERE order_id = 5001
+ORDER BY action_date DESC;
+
+-- View recent audit activity (last 24 hours)
+SELECT 
+    oal.audit_id,
+    oal.order_number,
+    CONCAT(c.first_name, ' ', c.last_name) AS customer_name,
+    oal.action_type,
+    oal.new_status,
+    oal.new_total,
+    oal.action_date,
+    oal.performed_by
+FROM order_audit_log oal
+LEFT JOIN customers c ON oal.customer_id = c.customer_id
+WHERE oal.action_date >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+ORDER BY oal.action_date DESC
+LIMIT 50;
+
+-- ============================================
+-- MAINTENANCE & OPTIMIZATION QUERIES
+-- ============================================
+
+-- Check index usage and performance
+SHOW INDEX FROM orders;
+SHOW INDEX FROM customers;
+
+-- Analyze table statistics
+ANALYZE TABLE orders;
+ANALYZE TABLE customers;
+ANALYZE TABLE order_items;
+ANALYZE TABLE payment_transactions;
+
+-- Check for orders with payment discrepancies
+SELECT 
+    o.order_id,
+    o.order_number,
+    o.total_amount,
+    o.payment_status,
+    COALESCE(SUM(pt.payment_amount), 0) AS total_paid,
+    (o.total_amount - COALESCE(SUM(pt.payment_amount), 0)) AS discrepancy
+FROM orders o
+LEFT JOIN payment_transactions pt ON o.order_id = pt.order_id AND pt.status = 'Completed'
+GROUP BY o.order_id, o.order_number, o.total_amount, o.payment_status
+HAVING ABS(discrepancy) > 0.01
+ORDER BY discrepancy DESC;
