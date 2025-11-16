@@ -1,0 +1,388 @@
+-- ============================================
+-- STUDENT MANAGEMENT DATABASE SYSTEM
+-- ============================================
+
+-- Drop existing tables if they exist (in reverse order of dependencies)
+DROP TABLE IF EXISTS attendance CASCADE;
+DROP TABLE IF EXISTS grades CASCADE;
+DROP TABLE IF EXISTS enrollments CASCADE;
+DROP TABLE IF EXISTS courses CASCADE;
+DROP TABLE IF EXISTS professors CASCADE;
+DROP TABLE IF EXISTS students CASCADE;
+
+-- ============================================
+-- TABLE CREATION
+-- ============================================
+
+-- Students Table
+CREATE TABLE students (
+    student_id INT PRIMARY KEY,
+    first_name VARCHAR(50) NOT NULL,
+    last_name VARCHAR(50) NOT NULL,
+    email VARCHAR(100) UNIQUE NOT NULL,
+    date_of_birth DATE NOT NULL,
+    enrollment_date DATE DEFAULT CURRENT_DATE,
+    gpa DECIMAL(3,2) DEFAULT 0.00,
+    CHECK (gpa >= 0.00 AND gpa <= 4.00),
+    CHECK (email LIKE '%@%')
+);
+
+-- Professors Table
+CREATE TABLE professors (
+    professor_id INT PRIMARY KEY,
+    first_name VARCHAR(50) NOT NULL,
+    last_name VARCHAR(50) NOT NULL,
+    email VARCHAR(100) UNIQUE NOT NULL,
+    department VARCHAR(50) NOT NULL,
+    hire_date DATE DEFAULT CURRENT_DATE,
+    CHECK (email LIKE '%@%')
+);
+
+-- Courses Table
+CREATE TABLE courses (
+    course_id INT PRIMARY KEY,
+    course_code VARCHAR(10) UNIQUE NOT NULL,
+    course_name VARCHAR(100) NOT NULL,
+    credits INT NOT NULL,
+    professor_id INT,
+    semester VARCHAR(20) NOT NULL,
+    max_capacity INT DEFAULT 30,
+    CHECK (credits > 0),
+    CHECK (max_capacity > 0),
+    CONSTRAINT fk_professor 
+        FOREIGN KEY (professor_id) 
+        REFERENCES professors(professor_id) 
+        ON DELETE SET NULL
+);
+
+-- Enrollments Table
+CREATE TABLE enrollments (
+    enrollment_id INT PRIMARY KEY,
+    student_id INT NOT NULL,
+    course_id INT NOT NULL,
+    enrollment_date DATE DEFAULT CURRENT_DATE,
+    status VARCHAR(20) DEFAULT 'Active',
+    CHECK (status IN ('Active', 'Dropped', 'Completed')),
+    CONSTRAINT fk_enrollment_student 
+        FOREIGN KEY (student_id) 
+        REFERENCES students(student_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT fk_enrollment_course 
+        FOREIGN KEY (course_id) 
+        REFERENCES courses(course_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT unique_enrollment 
+        UNIQUE (student_id, course_id)
+);
+
+-- Grades Table
+CREATE TABLE grades (
+    grade_id INT PRIMARY KEY,
+    enrollment_id INT NOT NULL,
+    assignment_name VARCHAR(100) NOT NULL,
+    grade_value DECIMAL(5,2) NOT NULL,
+    max_points DECIMAL(5,2) NOT NULL,
+    grade_date DATE DEFAULT CURRENT_DATE,
+    CHECK (grade_value >= 0),
+    CHECK (max_points > 0),
+    CHECK (grade_value <= max_points),
+    CONSTRAINT fk_grade_enrollment 
+        FOREIGN KEY (enrollment_id) 
+        REFERENCES enrollments(enrollment_id) 
+        ON DELETE CASCADE
+);
+
+-- Attendance Table
+CREATE TABLE attendance (
+    attendance_id INT PRIMARY KEY,
+    enrollment_id INT NOT NULL,
+    attendance_date DATE NOT NULL,
+    status VARCHAR(10) DEFAULT 'Present',
+    CHECK (status IN ('Present', 'Absent', 'Late', 'Excused')),
+    CONSTRAINT fk_attendance_enrollment 
+        FOREIGN KEY (enrollment_id) 
+        REFERENCES enrollments(enrollment_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT unique_attendance 
+        UNIQUE (enrollment_id, attendance_date)
+);
+
+-- ============================================
+-- STORED PROCEDURES
+-- ============================================
+
+-- Procedure 1: Calculate GPA for a specific student
+DELIMITER //
+CREATE PROCEDURE calculate_student_gpa(IN p_student_id INT)
+BEGIN
+    DECLARE v_gpa DECIMAL(3,2);
+    DECLARE v_total_points DECIMAL(10,2);
+    DECLARE v_total_credits INT;
+    
+    -- Calculate weighted GPA based on course grades and credits
+    SELECT 
+        COALESCE(SUM(course_gpa * c.credits) / NULLIF(SUM(c.credits), 0), 0.00)
+    INTO v_gpa
+    FROM (
+        SELECT 
+            e.enrollment_id,
+            e.course_id,
+            CASE 
+                WHEN AVG((g.grade_value / g.max_points) * 100) >= 93 THEN 4.00
+                WHEN AVG((g.grade_value / g.max_points) * 100) >= 90 THEN 3.70
+                WHEN AVG((g.grade_value / g.max_points) * 100) >= 87 THEN 3.30
+                WHEN AVG((g.grade_value / g.max_points) * 100) >= 83 THEN 3.00
+                WHEN AVG((g.grade_value / g.max_points) * 100) >= 80 THEN 2.70
+                WHEN AVG((g.grade_value / g.max_points) * 100) >= 77 THEN 2.30
+                WHEN AVG((g.grade_value / g.max_points) * 100) >= 73 THEN 2.00
+                WHEN AVG((g.grade_value / g.max_points) * 100) >= 70 THEN 1.70
+                WHEN AVG((g.grade_value / g.max_points) * 100) >= 67 THEN 1.30
+                WHEN AVG((g.grade_value / g.max_points) * 100) >= 60 THEN 1.00
+                ELSE 0.00
+            END AS course_gpa
+        FROM enrollments e
+        LEFT JOIN grades g ON e.enrollment_id = g.enrollment_id
+        WHERE e.student_id = p_student_id 
+          AND e.status = 'Completed'
+        GROUP BY e.enrollment_id, e.course_id
+    ) AS course_gpas
+    JOIN courses c ON course_gpas.course_id = c.course_id;
+    
+    -- Update student's GPA
+    UPDATE students 
+    SET gpa = v_gpa 
+    WHERE student_id = p_student_id;
+    
+    SELECT CONCAT('GPA updated for student ID ', p_student_id, ': ', v_gpa) AS result;
+END //
+DELIMITER ;
+
+-- Procedure 2: Get attendance percentage for a student in a course
+DELIMITER //
+CREATE PROCEDURE get_attendance_percentage(
+    IN p_student_id INT, 
+    IN p_course_id INT,
+    OUT p_percentage DECIMAL(5,2)
+)
+BEGIN
+    DECLARE v_total_classes INT;
+    DECLARE v_attended_classes INT;
+    DECLARE v_enrollment_id INT;
+    
+    -- Get enrollment ID
+    SELECT enrollment_id INTO v_enrollment_id
+    FROM enrollments
+    WHERE student_id = p_student_id AND course_id = p_course_id
+    LIMIT 1;
+    
+    -- Count total classes
+    SELECT COUNT(*) INTO v_total_classes
+    FROM attendance
+    WHERE enrollment_id = v_enrollment_id;
+    
+    -- Count attended classes (Present, Late, Excused)
+    SELECT COUNT(*) INTO v_attended_classes
+    FROM attendance
+    WHERE enrollment_id = v_enrollment_id 
+      AND status IN ('Present', 'Late', 'Excused');
+    
+    -- Calculate percentage
+    IF v_total_classes > 0 THEN
+        SET p_percentage = (v_attended_classes / v_total_classes) * 100;
+    ELSE
+        SET p_percentage = 0.00;
+    END IF;
+END //
+DELIMITER ;
+
+-- Procedure 3: Enroll student in course with capacity check
+DELIMITER //
+CREATE PROCEDURE enroll_student(
+    IN p_student_id INT,
+    IN p_course_id INT,
+    OUT p_result VARCHAR(200)
+)
+BEGIN
+    DECLARE v_current_enrollment INT;
+    DECLARE v_max_capacity INT;
+    DECLARE v_enrollment_exists INT;
+    DECLARE v_next_id INT;
+    
+    -- Check if already enrolled
+    SELECT COUNT(*) INTO v_enrollment_exists
+    FROM enrollments
+    WHERE student_id = p_student_id AND course_id = p_course_id;
+    
+    IF v_enrollment_exists > 0 THEN
+        SET p_result = 'Error: Student already enrolled in this course';
+    ELSE
+        -- Check course capacity
+        SELECT COUNT(*) INTO v_current_enrollment
+        FROM enrollments
+        WHERE course_id = p_course_id AND status = 'Active';
+        
+        SELECT max_capacity INTO v_max_capacity
+        FROM courses
+        WHERE course_id = p_course_id;
+        
+        IF v_current_enrollment >= v_max_capacity THEN
+            SET p_result = 'Error: Course is at maximum capacity';
+        ELSE
+            -- Get next enrollment ID
+            SELECT COALESCE(MAX(enrollment_id), 0) + 1 INTO v_next_id
+            FROM enrollments;
+            
+            -- Enroll student
+            INSERT INTO enrollments (enrollment_id, student_id, course_id, status)
+            VALUES (v_next_id, p_student_id, p_course_id, 'Active');
+            
+            SET p_result = 'Success: Student enrolled successfully';
+        END IF;
+    END IF;
+END //
+DELIMITER ;
+
+-- ============================================
+-- TRIGGERS
+-- ============================================
+
+-- Trigger 1: Auto-update GPA when grades are inserted or updated
+DELIMITER //
+CREATE TRIGGER after_grade_insert
+AFTER INSERT ON grades
+FOR EACH ROW
+BEGIN
+    DECLARE v_student_id INT;
+    
+    SELECT student_id INTO v_student_id
+    FROM enrollments
+    WHERE enrollment_id = NEW.enrollment_id;
+    
+    CALL calculate_student_gpa(v_student_id);
+END //
+DELIMITER ;
+
+DELIMITER //
+CREATE TRIGGER after_grade_update
+AFTER UPDATE ON grades
+FOR EACH ROW
+BEGIN
+    DECLARE v_student_id INT;
+    
+    SELECT student_id INTO v_student_id
+    FROM enrollments
+    WHERE enrollment_id = NEW.enrollment_id;
+    
+    CALL calculate_student_gpa(v_student_id);
+END //
+DELIMITER ;
+
+-- Trigger 2: Validate attendance date is not in the future
+DELIMITER //
+CREATE TRIGGER before_attendance_insert
+BEFORE INSERT ON attendance
+FOR EACH ROW
+BEGIN
+    IF NEW.attendance_date > CURRENT_DATE THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Attendance date cannot be in the future';
+    END IF;
+END //
+DELIMITER ;
+
+-- Trigger 3: Prevent enrollment deletion if grades exist
+DELIMITER //
+CREATE TRIGGER before_enrollment_delete
+BEFORE DELETE ON enrollments
+FOR EACH ROW
+BEGIN
+    DECLARE v_grade_count INT;
+    
+    SELECT COUNT(*) INTO v_grade_count
+    FROM grades
+    WHERE enrollment_id = OLD.enrollment_id;
+    
+    IF v_grade_count > 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Cannot delete enrollment with existing grades';
+    END IF;
+END //
+DELIMITER ;
+
+-- ============================================
+-- SAMPLE DATA INSERTION
+-- ============================================
+
+-- Insert Professors
+INSERT INTO professors VALUES
+(1, 'John', 'Smith', 'j.smith@university.edu', 'Computer Science', '2020-08-15'),
+(2, 'Sarah', 'Johnson', 's.johnson@university.edu', 'Mathematics', '2019-01-10'),
+(3, 'Michael', 'Brown', 'm.brown@university.edu', 'Physics', '2021-09-01');
+
+-- Insert Students
+INSERT INTO students (student_id, first_name, last_name, email, date_of_birth, enrollment_date) VALUES
+(1001, 'Alice', 'Williams', 'alice.w@student.edu', '2003-05-15', '2023-09-01'),
+(1002, 'Bob', 'Davis', 'bob.d@student.edu', '2003-08-22', '2023-09-01'),
+(1003, 'Carol', 'Martinez', 'carol.m@student.edu', '2004-02-10', '2023-09-01');
+
+-- Insert Courses
+INSERT INTO courses VALUES
+(101, 'CS101', 'Introduction to Programming', 3, 1, 'Fall 2024', 30),
+(102, 'MATH201', 'Calculus I', 4, 2, 'Fall 2024', 35),
+(103, 'PHY101', 'Physics Fundamentals', 4, 3, 'Fall 2024', 25);
+
+-- Insert Enrollments
+INSERT INTO enrollments (enrollment_id, student_id, course_id, status) VALUES
+(1, 1001, 101, 'Active'),
+(2, 1001, 102, 'Active'),
+(3, 1002, 101, 'Active'),
+(4, 1003, 103, 'Active');
+
+-- Insert Sample Grades
+INSERT INTO grades VALUES
+(1, 1, 'Midterm Exam', 85.00, 100.00, '2024-10-15'),
+(2, 1, 'Assignment 1', 90.00, 100.00, '2024-09-20'),
+(3, 2, 'Quiz 1', 78.00, 100.00, '2024-09-25'),
+(4, 3, 'Midterm Exam', 92.00, 100.00, '2024-10-15');
+
+-- Insert Sample Attendance
+INSERT INTO attendance VALUES
+(1, 1, '2024-09-05', 'Present'),
+(2, 1, '2024-09-10', 'Present'),
+(3, 1, '2024-09-15', 'Absent'),
+(4, 2, '2024-09-05', 'Present'),
+(5, 3, '2024-09-05', 'Late');
+
+-- ============================================
+-- SAMPLE QUERIES AND PROCEDURE CALLS
+-- ============================================
+
+-- Calculate GPA for student 1001
+CALL calculate_student_gpa(1001);
+
+-- Get attendance percentage
+CALL get_attendance_percentage(1001, 101, @att_percentage);
+SELECT @att_percentage AS attendance_percentage;
+
+-- Enroll a student
+CALL enroll_student(1002, 102, @result);
+SELECT @result AS enrollment_result;
+
+-- View all students with their GPAs
+SELECT student_id, first_name, last_name, gpa, enrollment_date
+FROM students
+ORDER BY gpa DESC;
+
+-- View course enrollments with professor details
+SELECT 
+    s.student_id,
+    CONCAT(s.first_name, ' ', s.last_name) AS student_name,
+    c.course_code,
+    c.course_name,
+    CONCAT(p.first_name, ' ', p.last_name) AS professor_name,
+    e.status
+FROM enrollments e
+JOIN students s ON e.student_id = s.student_id
+JOIN courses c ON e.course_id = c.course_id
+LEFT JOIN professors p ON c.professor_id = p.professor_id
+ORDER BY s.student_id, c.course_code;
